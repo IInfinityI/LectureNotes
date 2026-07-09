@@ -150,8 +150,7 @@ class MainActivity : ComponentActivity() {
                                 val audioFile = File(cacheDir, RecordingService.RECORDING_FILE)
                                 val modelFile = File(cacheDir, "ggml-tiny.bin")
                                 if (audioFile.exists() && audioFile.length() > 32000) {
-                                    val bytes = activity.transcribeAudio(audioFile.absolutePath, modelFile.absolutePath, "ru")
-                                    String(bytes, Charsets.UTF_8)
+                                    TextProcessor.processText(activity.transcribeAudio(audioFile.absolutePath, modelFile.absolutePath, "ru"))
                                 } else {
                                     "ет аудио данных"
                                 }
@@ -175,8 +174,7 @@ class MainActivity : ComponentActivity() {
                                 if (audioData.size > 32000) {
                                     val chunkResult = withContext(Dispatchers.IO) {
                                         try {
-                                            val bytes = activity.transcribeChunk(audioData, modelFile.absolutePath, "ru")
-                                            String(bytes, Charsets.UTF_8)
+                                            TextProcessor.processText(activity.transcribeChunk(audioData, modelFile.absolutePath, "ru"))
                                         } catch (e: Exception) {
                                             Log.e(TAG, "transcribeChunk error", e)
                                             ""
@@ -282,6 +280,16 @@ class MainActivity : ComponentActivity() {
         )
     }
 }
+
+
+
+
+
+
+
+
+
+
 
 
 
