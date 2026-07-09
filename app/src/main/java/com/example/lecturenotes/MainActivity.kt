@@ -58,8 +58,8 @@ class MainActivity : ComponentActivity() {
     }
 
     external fun stringFromJNI(): String
-    external fun transcribeAudio(audioPath: String, modelPath: String, language: String): ByteArray
-    external fun transcribeChunk(audioData: ByteArray, modelPath: String, language: String): ByteArray
+    external fun transcribeAudio(audioPath: String, modelPath: String, language: String): String
+    external fun transcribeChunk(audioData: ByteArray, modelPath: String, language: String): String
 
     private val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.POST_NOTIFICATIONS)
@@ -282,5 +282,6 @@ class MainActivity : ComponentActivity() {
         )
     }
 }
+
 
 
