@@ -92,7 +92,7 @@ class MainActivity : ComponentActivity() {
             assets.open("ggml-tiny.bin").use { input ->
                 FileOutputStream(modelFile).use { output -> input.copyTo(output) }
             }
-        }
+            }
     }
 
     private fun checkPermissions(): Boolean = requiredPermissions.all {
