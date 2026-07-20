@@ -95,17 +95,18 @@ class MainActivity : ComponentActivity() {
             }
     }
 
-    private fun checkPermissions(): Boolean = requiredPermissions.all {
+    private fun checkPermission
+    s(): Boolean = requiredPermissions.all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun startRecording(context: Context) {
-        val intent = Intent(context, RecordingService::class.java).apply { action = RecordingService.ACTION_START }
+        val intent = Intent(context, AudioRecordingService::class.java).apply { action = RecordingService.ACTION_START }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
     }
 
     private fun stopRecording(context: Context) {
-        val intent = Intent(context, RecordingService::class.java).apply { action = RecordingService.ACTION_STOP }
+        val intent = Intent(context, AudioRecordingService::class.java).apply { action = RecordingService.ACTION_STOP }
         context.startService(intent)
     }
 
@@ -280,6 +281,11 @@ class MainActivity : ComponentActivity() {
         )
     }
 }
+
+
+
+
+
 
 
 

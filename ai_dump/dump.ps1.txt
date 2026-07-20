@@ -1,0 +1,40 @@
+﻿$dumpDir = "ai_dump"
+$treeFile = "project_tree.txt"
+$exclude = 'build|\.gradle|\.idea|\.git|\.kotlin|captures|ai_dump'
+$extExclude = '\.(png|jpg|jpeg|webp|gif|ttf|otf|apk|aab|iml|class|jar|so|dex)$'
+
+Write-Host "[1/4] чищаю папку дампа..." -ForegroundColor Cyan
+if (Test-Path $dumpDir) { Remove-Item $dumpDir -Recurse -Force }
+New-Item -ItemType Directory -Path $dumpDir | Out-Null
+
+Write-Host "[2/4] Сканирую проект..." -ForegroundColor Cyan
+$dirs = Get-ChildItem -Recurse -Directory | Where-Object { $_.FullName -notmatch $exclude }
+$files = Get-ChildItem -Recurse -File | Where-Object { $_.FullName -notmatch $exclude -and $_.Name -notmatch $extExclude }
+
+Write-Host "[3/4] Создаю структуру и копирую файлы ($($files.Count) шт)..." -ForegroundColor Yellow
+$treeSb = [System.Text.StringBuilder]::new()
+[void]$treeSb.AppendLine("=== DIRECTORIES ===")
+$dirs | ForEach-Object { [void]$treeSb.AppendLine($_.FullName.Replace((Get-Location), ".")) }
+[void]$treeSb.AppendLine()
+[void]$treeSb.AppendLine("=== FILES ===")
+
+$counter = 0
+$files | ForEach-Object {
+    $counter++
+    if ($counter % 10 -eq 0) { Write-Host "  бработано: $counter / $($files.Count)" -ForegroundColor Gray }
+    
+    $relPath = $_.FullName.Replace((Get-Location), ".")
+    [void]$treeSb.AppendLine($relPath)
+    
+    $destPath = Join-Path $dumpDir "$relPath.txt"
+    $destDir = Split-Path $destPath -Parent
+    if (-not (Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force | Out-Null }
+    
+    $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+    if ($content) { [System.IO.File]::WriteAllText($destPath, $content, [System.Text.Encoding]::UTF8) }
+}
+
+Write-Host "[4/4] аписываю дерево..." -ForegroundColor Cyan
+[System.IO.File]::WriteAllText((Resolve-Path $treeFile).Path, $treeSb.ToString(), [System.Text.Encoding]::UTF8)
+
+Write-Host "[OK] амп создан: $dumpDir ($($files.Count) файлов)" -ForegroundColor Green

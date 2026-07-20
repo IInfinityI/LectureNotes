@@ -6,7 +6,7 @@ add_compile_options(-O3)
 add_subdirectory(whisper.cpp)
 
 add_library(lecturenotes SHARED
-    native-lib.cpp
+    whisper_jni_bridge.cpp
 )
 
 target_link_libraries(lecturenotes
@@ -19,3 +19,4 @@ target_link_libraries(lecturenotes
 target_include_directories(lecturenotes PRIVATE
     whisper.cpp
 )
+
