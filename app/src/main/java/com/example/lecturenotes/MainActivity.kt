@@ -99,12 +99,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startRecording(context: Context) {
-        val intent = Intent(context, AudioRecordingService::class.java).apply { action = AudioRecordingService.ACTION_START }
+        val intent = Intent(context, RecordingService::class.java).apply { action = RecordingService.ACTION_START }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
     }
 
     private fun stopRecording(context: Context) {
-        val intent = Intent(context, AudioRecordingService::class.java).apply { action = AudioRecordingService.ACTION_STOP }
+        val intent = Intent(context, RecordingService::class.java).apply { action = RecordingService.ACTION_STOP }
         context.startService(intent)
     }
 
@@ -146,15 +146,10 @@ class MainActivity : ComponentActivity() {
                         scope.launch {
                             val result = withContext(Dispatchers.IO) {
                                 delay(500)
-                                val audioFile = File(activity.cacheDir, AudioRecordingService.RECORDING_FILE)
-                                val modelFile = File(activity.cacheDir, "ggml-tiny.bin")
+                                val audioFile = File(cacheDir, RecordingService.RECORDING_FILE)
+                                val modelFile = File(cacheDir, "ggml-tiny.bin")
                                 if (audioFile.exists() && audioFile.length() > 32000) {
-                                    val rawText = activity.transcribeAudio(
-                                        audioFile.absolutePath,
-                                        modelFile.absolutePath,
-                                        "ru"
-                                    )
-                                    TextProcessor.processText(rawText)
+                                    activity.transcribeAudio(audioFile.absolutePath, modelFile.absolutePath, "ru")
                                 } else {
                                     "Нет аудио данных"
                                 }
@@ -169,7 +164,7 @@ class MainActivity : ComponentActivity() {
                         activity.startRecording(context)
                         isRecording = true
                         liveText = "Слушаю... (обновление каждые 3 сек)"
-                        val modelFile = File(activity.cacheDir, "ggml-tiny.bin")
+                        val modelFile = File(cacheDir, "ggml-tiny.bin")
                         streamingJob = scope.launch {
                             while (isActive) {
                                 delay(3000)
@@ -178,12 +173,7 @@ class MainActivity : ComponentActivity() {
                                 if (audioData.size > 32000) {
                                     val chunkResult = withContext(Dispatchers.IO) {
                                         try {
-                                            val rawText = activity.transcribeChunk(
-                                                audioData,
-                                                modelFile.absolutePath,
-                                                "ru"
-                                            )
-                                            TextProcessor.processText(rawText)
+                                            activity.transcribeChunk(audioData, modelFile.absolutePath, "ru")
                                         } catch (e: Exception) {
                                             Log.e(TAG, "transcribeChunk error", e)
                                             ""
