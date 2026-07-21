@@ -47,7 +47,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
-import com.example.lecturenotes.TextProcessor
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -71,7 +70,7 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.values.all { it }
-        if (!allGranted) Toast.makeText(this, "ужны разрешения", Toast.LENGTH_LONG).show()
+        if (!allGranted) Toast.makeText(this, "Нужны разрешения", Toast.LENGTH_LONG).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -92,21 +91,20 @@ class MainActivity : ComponentActivity() {
             assets.open("ggml-tiny.bin").use { input ->
                 FileOutputStream(modelFile).use { output -> input.copyTo(output) }
             }
-            }
+        }
     }
 
-    private fun checkPermission
-    s(): Boolean = requiredPermissions.all {
+    private fun checkPermissions(): Boolean = requiredPermissions.all {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun startRecording(context: Context) {
-        val intent = Intent(context, AudioRecordingService::class.java).apply { action = RecordingService.ACTION_START }
+        val intent = Intent(context, AudioRecordingService::class.java).apply { action = AudioRecordingService.ACTION_START }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(intent) else context.startService(intent)
     }
 
     private fun stopRecording(context: Context) {
-        val intent = Intent(context, AudioRecordingService::class.java).apply { action = RecordingService.ACTION_STOP }
+        val intent = Intent(context, AudioRecordingService::class.java).apply { action = AudioRecordingService.ACTION_STOP }
         context.startService(intent)
     }
 
@@ -116,7 +114,7 @@ class MainActivity : ComponentActivity() {
         val activity = LocalContext.current as? MainActivity
         var isRecording by remember { mutableStateOf(false) }
         var isFinalizing by remember { mutableStateOf(false) }
-        var liveText by remember { mutableStateOf("ажми кнопку для записи") }
+        var liveText by remember { mutableStateOf("Нажми кнопку для записи") }
         var streamingJob by remember { mutableStateOf<Job?>(null) }
         val scope = rememberCoroutineScope()
 
@@ -144,20 +142,25 @@ class MainActivity : ComponentActivity() {
                         activity.stopRecording(context)
                         isRecording = false
                         isFinalizing = true
-                        liveText = "инализация..."
+                        liveText = "Финализация..."
                         scope.launch {
                             val result = withContext(Dispatchers.IO) {
                                 delay(500)
-                                val audioFile = File(cacheDir, RecordingService.RECORDING_FILE)
-                                val modelFile = File(cacheDir, "ggml-tiny.bin")
+                                val audioFile = File(activity.cacheDir, AudioRecordingService.RECORDING_FILE)
+                                val modelFile = File(activity.cacheDir, "ggml-tiny.bin")
                                 if (audioFile.exists() && audioFile.length() > 32000) {
-                                    TextProcessor.processText(activity.transcribeAudio(audioFile.absolutePath, modelFile.absolutePath, "ru"))
+                                    val rawText = activity.transcribeAudio(
+                                        audioFile.absolutePath,
+                                        modelFile.absolutePath,
+                                        "ru"
+                                    )
+                                    TextProcessor.processText(rawText)
                                 } else {
-                                    "ет аудио данных"
+                                    "Нет аудио данных"
                                 }
                             }
                             Log.i(TAG, "Final result: $result")
-                            liveText = if (result.isNullOrEmpty()) "устой результат" else result
+                            liveText = if (result.isNullOrEmpty()) "Пустой результат" else result
                             isFinalizing = false
                         }
                     } else {
@@ -166,7 +169,7 @@ class MainActivity : ComponentActivity() {
                         activity.startRecording(context)
                         isRecording = true
                         liveText = "Слушаю... (обновление каждые 3 сек)"
-                        val modelFile = File(cacheDir, "ggml-tiny.bin")
+                        val modelFile = File(activity.cacheDir, "ggml-tiny.bin")
                         streamingJob = scope.launch {
                             while (isActive) {
                                 delay(3000)
@@ -175,7 +178,12 @@ class MainActivity : ComponentActivity() {
                                 if (audioData.size > 32000) {
                                     val chunkResult = withContext(Dispatchers.IO) {
                                         try {
-                                            TextProcessor.processText(activity.transcribeChunk(audioData, modelFile.absolutePath, "ru"))
+                                            val rawText = activity.transcribeChunk(
+                                                audioData,
+                                                modelFile.absolutePath,
+                                                "ru"
+                                            )
+                                            TextProcessor.processText(rawText)
                                         } catch (e: Exception) {
                                             Log.e(TAG, "transcribeChunk error", e)
                                             ""
@@ -206,7 +214,7 @@ class MainActivity : ComponentActivity() {
                         horizontalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         CircularProgressIndicator(modifier = Modifier.size(32.dp), strokeWidth = 3.dp)
-                        Text("инальная обработка...", style = MaterialTheme.typography.titleMedium)
+                        Text("Финальная обработка...", style = MaterialTheme.typography.titleMedium)
                     }
                 }
                 Spacer(modifier = Modifier.height(16.dp))
@@ -220,9 +228,9 @@ class MainActivity : ComponentActivity() {
                 Column(modifier = Modifier.padding(20.dp)) {
                     Text(
                         text = when {
-                            isFinalizing -> "инализация"
-                            isRecording -> " реальном времени"
-                            else -> "езультат"
+                            isFinalizing -> "Финализация"
+                            isRecording -> "В реальном времени"
+                            else -> "Результат"
                         },
                         style = MaterialTheme.typography.labelLarge,
                         color = if (isRecording) Color(0xFFEF4444) else MaterialTheme.colorScheme.primary
@@ -275,28 +283,9 @@ class MainActivity : ComponentActivity() {
         }
         Spacer(modifier = Modifier.height(16.dp))
         Text(
-            text = when { isProcessing -> "бработка..."; isRecording -> "становить"; else -> "ачать запись" },
+            text = when { isProcessing -> "Обработка..."; isRecording -> "Остановить"; else -> "Начать запись" },
             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Medium),
             modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center
         )
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
