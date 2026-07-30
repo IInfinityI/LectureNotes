@@ -31,14 +31,13 @@ Java_com_example_lecturenotes_MainActivity_transcribeAudio(
             env->ReleaseStringUTFChars(modelPath, model_path_str);
             env->ReleaseStringUTFChars(audioPath, audio_path_str);
             env->ReleaseStringUTFChars(language, lang_str);
-            return env->NewStringUTF("Ошибка: модель не найдена или повреждена");
+            return env->NewStringUTF("Ошибка: модель не найдена");
         }
         current_model_path = model_path_str;
         LOGI("Model loaded successfully");
     }
 
-    std::vector<float> pcmf32;
-    std::ifstream file(audio_path_str, std::ios::binary);
+    std::ifstream file(audio_path_str, std::ios::binary | std::ios::ate);
     if (!file) {
         LOGE("Failed to open audio file: %s", audio_path_str);
         env->ReleaseStringUTFChars(modelPath, model_path_str);
@@ -47,11 +46,10 @@ Java_com_example_lecturenotes_MainActivity_transcribeAudio(
         return env->NewStringUTF("Ошибка: не удалось открыть аудиофайл");
     }
 
-    file.seekg(0, std::ios::end);
     size_t file_size = file.tellg();
-    file.seekg(44, std::ios::beg); // Пропускаем стандартный WAV-заголовок
+    file.seekg(0, std::ios::beg);
 
-    size_t num_samples = (file_size - 44) / 2;
+    size_t num_samples = file_size / 2; // 16-bit PCM
     if (num_samples == 0) {
         env->ReleaseStringUTFChars(modelPath, model_path_str);
         env->ReleaseStringUTFChars(audioPath, audio_path_str);
@@ -59,11 +57,11 @@ Java_com_example_lecturenotes_MainActivity_transcribeAudio(
         return env->NewStringUTF("Аудиофайл пуст");
     }
 
-    pcmf32.resize(num_samples);
     std::vector<int16_t> pcm16(num_samples);
-    file.read(reinterpret_cast<char*>(pcm16.data()), num_samples * 2);
+    file.read(reinterpret_cast<char*>(pcm16.data()), file_size);
     file.close();
 
+    std::vector<float> pcmf32(num_samples);
     for (size_t i = 0; i < num_samples; i++) {
         pcmf32[i] = pcm16[i] / 32768.0f;
     }
@@ -121,7 +119,7 @@ Java_com_example_lecturenotes_MainActivity_transcribeChunk(
     }
 
     jsize len = env->GetArrayLength(audioData);
-    if (len < 32000) { // Меньше 1 секунды аудио (16000 Гц * 2 байта)
+    if (len < 32000) {
         env->ReleaseStringUTFChars(modelPath, model_path_str);
         env->ReleaseStringUTFChars(language, lang_str);
         return env->NewStringUTF("");
@@ -146,7 +144,7 @@ Java_com_example_lecturenotes_MainActivity_transcribeChunk(
     wparams.translate = false;
     wparams.language = lang_str;
     wparams.n_threads = 2;
-    wparams.no_context = true; // Критично для чанков, чтобы не галлюцинировать на основе прошлого
+    wparams.no_context = true;
 
     if (whisper_full(ctx, wparams, pcmf32.data(), pcmf32.size()) != 0) {
         LOGE("whisper_full failed for chunk");
