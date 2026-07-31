@@ -3,10 +3,12 @@
 import android.content.Intent
 import android.os.Bundle
 import android.util.Log
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import com.example.lecturenotes.databinding.ActivityMainBinding
 import com.example.lecturenotes.transcription.WhisperTranscriber
+import com.example.lecturenotes.ui.RecordingViewModel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
@@ -14,6 +16,10 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var whisperTranscriber: WhisperTranscriber
+    
+    // ViewModel для работы с БД
+    private val recordingViewModel: RecordingViewModel by viewModels()
+    
     private var isRecording = false
     private var liveText = ""
     private var audioCollectionJob: kotlinx.coroutines.Job? = null
@@ -39,7 +45,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Кнопка СТОП — останавливаем RecordingService
+        // Кнопка СТОП — останавливаем RecordingService и сохраняем в БД
         binding.btnStop.setOnClickListener {
             if (isRecording) {
                 stopRecordingViaService()
@@ -90,7 +96,13 @@ class MainActivity : AppCompatActivity() {
         }
         startService(intent)
 
-        Log.i("MainActivity", "Recording stopped. Final text length: ${liveText.length}")
+        // СОХРАНЯЕМ В БД через ViewModel
+        if (liveText.isNotBlank()) {
+            recordingViewModel.addRecording(liveText.trim())
+            Log.i("MainActivity", "Recording saved to DB. Text length: ${liveText.length}")
+        } else {
+            Log.w("MainActivity", "Recording not saved: text is empty")
+        }
     }
 
     override fun onDestroy() {

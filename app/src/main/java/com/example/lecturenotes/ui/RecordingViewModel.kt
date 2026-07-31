@@ -22,7 +22,7 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
     fun addRecording(transcription: String) {
         viewModelScope.launch {
             val dateFormat = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
-            val title = "апись ${dateFormat.format(Date())}"
+            val title = "Запись ${dateFormat.format(Date())}"
             dao.insert(Recording(title = title, transcription = transcription))
         }
     }
