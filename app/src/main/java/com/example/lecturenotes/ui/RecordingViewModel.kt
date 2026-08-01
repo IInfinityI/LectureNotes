@@ -1,41 +1,126 @@
 ﻿package com.example.lecturenotes.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.LiveData
+import androidx.lifecycle.MutableLiveData
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.example.lecturenotes.data.AppDatabase
 import com.example.lecturenotes.data.Recording
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.stateIn
+import com.example.lecturenotes.data.RecordingDatabase
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 class RecordingViewModel(application: Application) : AndroidViewModel(application) {
-    private val dao = AppDatabase.getDatabase(application).recordingDao()
-
-    val allRecordings: StateFlow<List<Recording>> = dao.getAllRecordings()
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-
-    fun addRecording(transcription: String) {
+    
+    companion object {
+        private const val TAG = "RecordingViewModel"
+    }
+    
+    private val dao = RecordingDatabase.getDatabase(application).recordingDao()
+    
+    // Список всех записей
+    val recordings: LiveData<List<Recording>> = dao.getAllRecordings()
+    
+    // Состояние загрузки
+    private val _isLoading = MutableLiveData<Boolean>()
+    val isLoading: LiveData<Boolean> = _isLoading
+    
+    // Сообщения об ошибках
+    private val _errorMessage = MutableLiveData<String?>()
+    val errorMessage: LiveData<String?> = _errorMessage
+    
+    /**
+     * Добавление новой записи в БД
+     */
+    fun addRecording(text: String) {
+        if (text.isBlank()) {
+            Log.w(TAG, "Cannot add empty recording")
+            _errorMessage.value = "Текст записи не может быть пустым"
+            return
+        }
+        
         viewModelScope.launch {
-            val dateFormat = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
-            val title = "Запись ${dateFormat.format(Date())}"
-            dao.insert(Recording(title = title, transcription = transcription))
+            try {
+                _isLoading.value = true
+                val recording = Recording(text = text.trim())
+                dao.insertRecording(recording)
+                Log.i(TAG, "Recording added successfully: ${recording.id}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error adding recording: ${e.message}", e)
+                _errorMessage.value = "Ошибка сохранения записи: ${e.message}"
+            } finally {
+                _isLoading.value = false
+            }
         }
     }
-
-    fun updateRecording(recording: Recording) {
-        viewModelScope.launch {
-            dao.update(recording)
-        }
-    }
-
+    
+    /**
+     * Удаление записи из БД
+     */
     fun deleteRecording(recording: Recording) {
         viewModelScope.launch {
-            dao.delete(recording)
+            try {
+                _isLoading.value = true
+                dao.deleteRecording(recording)
+                Log.i(TAG, "Recording deleted: ${recording.id}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error deleting recording: ${e.message}", e)
+                _errorMessage.value = "Ошибка удаления записи: ${e.message}"
+            } finally {
+                _isLoading.value = false
+            }
         }
+    }
+    
+    /**
+     * Обновление текста записи
+     */
+    fun updateRecording(recording: Recording, newText: String) {
+        if (newText.isBlank()) {
+            Log.w(TAG, "Cannot update with empty text")
+            _errorMessage.value = "Текст записи не может быть пустым"
+            return
+        }
+        
+        viewModelScope.launch {
+            try {
+                _isLoading.value = true
+                val updatedRecording = recording.copy(text = newText.trim())
+                dao.updateRecording(updatedRecording)
+                Log.i(TAG, "Recording updated: ${recording.id}")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error updating recording: ${e.message}", e)
+                _errorMessage.value = "Ошибка обновления записи: ${e.message}"
+            } finally {
+                _isLoading.value = false
+            }
+        }
+    }
+    
+    /**
+     * Очистка сообщения об ошибке
+     */
+    fun clearError() {
+        _errorMessage.value = null
+    }
+    
+    override fun onCleared() {
+        super.onCleared()
+        Log.i(TAG, "ViewModel cleared")
+    }
+}
+
+/**
+ * Factory для создания RecordingViewModel
+ */
+class RecordingViewModelFactory(private val application: Application) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(RecordingViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return RecordingViewModel(application) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
