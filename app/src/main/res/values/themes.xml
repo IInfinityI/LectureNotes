@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
 
-    <style name="Theme.LectureNotes" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Базовая тема приложения -->
+    <style name="Theme.LectureNotes" parent="android:Theme.Material.Light.NoActionBar">
+        <!-- Customize your theme here. -->
+    </style>
+
+    <!-- Тема без ActionBar для MainActivity -->
+    <style name="Theme.LectureNotes.NoActionBar" parent="Theme.LectureNotes">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+    </style>
+
 </resources>

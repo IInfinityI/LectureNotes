@@ -11,7 +11,7 @@ class WhisperTranscriber(private val context: Context) {
     
     companion object {
         private const val TAG = "WhisperTranscriber"
-        private const val MODEL_FILE_NAME = "ggml-base.bin"
+        private const val MODEL_FILE_NAME = "ggml-tiny.bin"
         
         // Загрузка нативной библиотеки
         init {
