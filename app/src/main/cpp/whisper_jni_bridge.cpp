@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
-#include "whisper.h"
+#include <whisper.h>
 
 #define LOG_TAG "WhisperJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
