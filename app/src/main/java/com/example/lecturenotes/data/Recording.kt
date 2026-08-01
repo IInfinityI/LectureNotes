@@ -10,5 +10,6 @@ data class Recording(
     val title: String = "",
     val transcription: String = "",
     val timestamp: Long = System.currentTimeMillis(),
-    val durationSeconds: Int = 0
+    val durationSeconds: Int = 0,
+    val audioPath: String? = null  // Путь к аудиофайлу (nullable для обратной совместимости)
 )
