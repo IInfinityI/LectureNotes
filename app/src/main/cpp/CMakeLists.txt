@@ -13,23 +13,49 @@ endif()
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O3 -DNDEBUG")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O3 -DNDEBUG")
 
-# ARM NEON — критично для производительности Whisper на мобильных
-if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a" OR CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+# ARM NEON — только для ARMv7, на ARM64 включён по умолчанию
+if(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
     add_definitions(-DGGML_USE_NEON)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mfpu=neon -mfloat-abi=softfp")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -mfpu=neon -mfloat-abi=softfp")
+elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+    add_definitions(-DGGML_USE_NEON)
+    # На ARM64 NEON доступен без дополнительных флагов
 endif()
 
-# Whisper.cpp как подмодуль
-add_subdirectory(whisper.cpp)
+# Пути к whisper.cpp
+set(WHISPER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/whisper.cpp)
+
+# Отключаем ненужные компоненты для Android
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+
+# Добавляем whisper.cpp
+add_subdirectory(${WHISPER_DIR} whisper_build)
 
 # Наша JNI-библиотека
-add_library(lecturenotes SHARED
+add_library(whisper_jni_bridge SHARED
     whisper_jni_bridge.cpp
 )
 
-target_link_libraries(lecturenotes
+# Include directories для whisper.h
+target_include_directories(whisper_jni_bridge PRIVATE
+    ${WHISPER_DIR}/include
+    ${WHISPER_DIR}/ggml/include
+)
+
+# Линкуем с whisper, ggml и системными библиотеками
+target_link_libraries(whisper_jni_bridge
     whisper
+    ggml
     android
     log
+)
+
+# Флаги компиляции для оптимизации
+target_compile_options(whisper_jni_bridge PRIVATE
+    -O3
+    -fvisibility=hidden
 )

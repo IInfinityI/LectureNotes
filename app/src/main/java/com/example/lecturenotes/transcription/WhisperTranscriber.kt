@@ -19,10 +19,10 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
     companion object {
         private const val TAG = "WhisperTranscriber"
         private const val DEFAULT_MODEL = "ggml-base.bin"
-        private const val MIN_CHUNK_BYTES = 32000 // 1 сек аудио: 16000 samples * 2 bytes
+        private const val MIN_CHUNK_BYTES = 32000 // 1 сек: 16000 samples * 2 bytes
 
         init {
-            System.loadLibrary("lecturenotes")
+            System.loadLibrary("whisper_jni_bridge")
         }
     }
 
@@ -41,7 +41,7 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
 
     /**
      * Инициализация модели. НЕ блокирует main thread.
-     * @param modelName Имя файла модели в assets (по умолчанию "ggml-base.bin")
+     * @param modelName Имя файла модели в assets
      * @return true если модель загружена
      */
     suspend fun initialize(modelName: String = DEFAULT_MODEL): Boolean = withContext(Dispatchers.IO) {
@@ -51,7 +51,6 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
                 return@withContext true
             }
 
-            // Если модель уже загружена, но другая — освобождаем старую
             if (isModelInitialized) {
                 releaseModel()
                 isModelInitialized = false
@@ -80,7 +79,7 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
     }
 
     /**
-     * Транскрибация чанка. Вызывается из IO dispatcher.
+     * Транскрибация чанка.
      * @param audioData PCM 16-bit mono, 16kHz
      * @param language Код языка ("ru", "en", "auto")
      * @return Распознанный текст или пустая строка
@@ -151,7 +150,7 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
     fun isReady(): Boolean = isModelInitialized
 
     /**
-     * Копирует модель из assets во внутреннее хранилище (если ещё не скопирована).
+     * Копирует модель из assets во внутреннее хранилище.
      * Возвращает абсолютный путь или null.
      */
     private fun getModelPath(modelName: String): String? {
@@ -171,7 +170,6 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
             internalFile.absolutePath
         } catch (e: Exception) {
             Log.e(TAG, "Failed to copy model '$modelName' from assets", e)
-            // Удаляем битый файл если создался
             if (internalFile.exists()) internalFile.delete()
             null
         }
