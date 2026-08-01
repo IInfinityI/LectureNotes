@@ -2,146 +2,169 @@ package com.example.lecturenotes.transcription
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
-/**
- * Обертка над Whisper.cpp JNI.
- * Управляет жизненным циклом модели: загрузка один раз, освобождение при закрытии.
- */
 class WhisperTranscriber(private val context: Context) {
-
+    
     companion object {
         private const val TAG = "WhisperTranscriber"
         private const val MODEL_FILE_NAME = "ggml-base.bin"
-
-        // Загружаем нативную библиотеку один раз
+        
+        // Загрузка нативной библиотеки
         init {
-            System.loadLibrary("lecturenotes")
+            System.loadLibrary("whisper_jni_bridge")
         }
     }
-
-    private var isModelInitialized = false
-
-    // Нативные методы (JNI) - привязаны к этому классу
+    
+    // JNI методы (реализованы в whisper_jni_bridge.cpp)
     private external fun initModel(modelPath: String): Boolean
     private external fun releaseModel()
     private external fun transcribeChunk(audioData: ByteArray, language: String): String
     private external fun transcribeAudio(audioPath: String, language: String): String
-
+    
+    private var isInitialized = false
+    private var isModelReleased = false
+    
     /**
-     * Инициализация модели Whisper.
-     * Копирует модель из assets в внутреннее хранилище (если нужно) и загружает в память.
-     * Вызывается ОДИН раз при старте приложения.
+     * Инициализация модели Whisper
+     * Копирует модель из assets в cacheDir и загружает её
      */
     fun initialize(): Boolean {
-        if (isModelInitialized) {
+        if (isInitialized) {
             Log.i(TAG, "Model already initialized")
             return true
         }
-
-        val modelPath = getModelPath()
-        if (modelPath == null) {
-            Log.e(TAG, "Model file not found")
+        
+        try {
+            // Копируем модель из assets в cacheDir
+            val modelFile = copyModelFromAssets()
+            if (modelFile == null) {
+                Log.e(TAG, "Failed to copy model from assets")
+                return false
+            }
+            
+            // Инициализируем модель через JNI
+            val result = initModel(modelFile.absolutePath)
+            isInitialized = result
+            
+            if (result) {
+                Log.i(TAG, "Model initialized successfully from: ${modelFile.absolutePath}")
+            } else {
+                Log.e(TAG, "Failed to initialize model")
+            }
+            
+            return result
+        } catch (e: Exception) {
+            Log.e(TAG, "Error initializing model: ${e.message}", e)
             return false
         }
-
-        val success = initModel(modelPath)
-        isModelInitialized = success
-
-        if (success) {
-            Log.i(TAG, "Whisper model loaded successfully from: $modelPath")
-        } else {
-            Log.e(TAG, "Failed to load Whisper model")
-        }
-
-        return success
     }
-
+    
     /**
-     * Освобождение модели из памяти.
-     * Вызывается при закрытии приложения или когда модель больше не нужна.
+     * Проверка готовности модели к работе
      */
-    fun shutdown() {
-        if (isModelInitialized) {
-            releaseModel()
-            isModelInitialized = false
-            Log.i(TAG, "Whisper model released")
-        }
+    fun isReady(): Boolean {
+        return isInitialized && !isModelReleased
     }
-
+    
     /**
-     * Транскрибация аудио-чанка в реальном времени.
-     * @param audioData PCM 16-bit mono, 16kHz
-     * @param language Код языка ("ru", "en", "auto")
-     * @return Распознанный текст или пустая строка
-     */
-    fun processChunk(audioData: ByteArray, language: String = "ru"): String {
-        if (!isModelInitialized) {
-            Log.e(TAG, "Model not initialized! Call initialize() first")
-            return ""
-        }
-
-        if (audioData.size < 32000) { // Минимум 1 секунда аудио
-            return ""
-        }
-
-        return try {
-            transcribeChunk(audioData, language)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error transcribing chunk", e)
-            ""
-        }
-    }
-
-    /**
-     * Транскрибация полного аудиофайла.
-     * @param audioPath Путь к WAV файлу
-     * @param language Код языка ("ru", "en", "auto")
+     * Транскрибация аудио-чанка в реальном времени
+     * @param audioData PCM 16-bit, 16kHz, mono
+     * @param language Код языка (например, "ru", "en")
      * @return Распознанный текст
      */
-    fun processFile(audioPath: String, language: String = "ru"): String {
-        if (!isModelInitialized) {
-            Log.e(TAG, "Model not initialized! Call initialize() first")
+    suspend fun processChunk(audioData: ByteArray, language: String): String {
+        if (!isReady()) {
+            Log.w(TAG, "Model not ready, cannot process chunk")
             return ""
         }
-
-        return try {
-            transcribeAudio(audioPath, language)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error transcribing file", e)
-            ""
+        
+        return withContext(Dispatchers.Default) {
+            try {
+                val result = transcribeChunk(audioData, language)
+                Log.d(TAG, "Chunk transcribed: ${result.length} chars")
+                result
+            } catch (e: Exception) {
+                Log.e(TAG, "Error transcribing chunk: ${e.message}", e)
+                ""
+            }
         }
     }
-
+    
     /**
-     * Получение пути к модели.
-     * Сначала проверяет внутреннее хранилище, потом assets.
+     * Транскрибация полного аудиофайла
+     * @param audioPath Путь к файлу PCM 16-bit, 16kHz, mono
+     * @param language Код языка (например, "ru", "en")
+     * @return Распознанный текст
      */
-    private fun getModelPath(): String? {
-        val internalModelFile = File(context.filesDir, MODEL_FILE_NAME)
-        
-        // Если модель уже скопирована во внутреннее хранилище
-        if (internalModelFile.exists()) {
-            return internalModelFile.absolutePath
+    suspend fun processFile(audioPath: String, language: String): String {
+        if (!isReady()) {
+            Log.w(TAG, "Model not ready, cannot process file")
+            return ""
         }
-
-        // Пытаемся скопировать из assets
+        
+        return withContext(Dispatchers.Default) {
+            try {
+                val result = transcribeAudio(audioPath, language)
+                Log.d(TAG, "File transcribed: ${result.length} chars")
+                result
+            } catch (e: Exception) {
+                Log.e(TAG, "Error transcribing file: ${e.message}", e)
+                ""
+            }
+        }
+    }
+    
+    /**
+     * Освобождение ресурсов модели
+     */
+    fun shutdown() {
+        if (isInitialized && !isModelReleased) {
+            releaseModel()
+            isModelReleased = true
+            isInitialized = false
+            Log.i(TAG, "Model released")
+        }
+    }
+    
+    /**
+     * Копирование модели из assets в cacheDir
+     */
+    private fun copyModelFromAssets(): File? {
         return try {
-            context.assets.open(MODEL_FILE_NAME).use { input ->
-                FileOutputStream(internalModelFile).use { output ->
-                    input.copyTo(output)
+            val modelDir = File(context.cacheDir, "models")
+            if (!modelDir.exists()) {
+                modelDir.mkdirs()
+            }
+            
+            val modelFile = File(modelDir, MODEL_FILE_NAME)
+            
+            // Если модель уже скопирована - возвращаем её
+            if (modelFile.exists()) {
+                Log.i(TAG, "Model already exists in cache: ${modelFile.absolutePath}")
+                return modelFile
+            }
+            
+            // Копируем из assets
+            context.assets.open(MODEL_FILE_NAME).use { inputStream ->
+                FileOutputStream(modelFile).use { outputStream ->
+                    inputStream.copyTo(outputStream)
                 }
             }
-            internalModelFile.absolutePath
+            
+            Log.i(TAG, "Model copied to cache: ${modelFile.absolutePath}")
+            modelFile
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to copy model from assets", e)
+            Log.e(TAG, "Error copying model from assets: ${e.message}", e)
             null
         }
     }
-
-    /**
-     * Проверка, инициализирована ли модель.
-     */
-    fun isReady(): Boolean = isModelInitialized
+    
+    // Финализация - освобождаем ресурсы при сборке мусора
+    protected fun finalize() {
+        shutdown()
+    }
 }
