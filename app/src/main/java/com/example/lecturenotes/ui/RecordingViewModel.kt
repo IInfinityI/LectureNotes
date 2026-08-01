@@ -8,8 +8,8 @@ import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.lecturenotes.data.AppDatabase
 import com.example.lecturenotes.data.Recording
-import com.example.lecturenotes.data.RecordingDatabase
 import kotlinx.coroutines.launch
 
 class RecordingViewModel(application: Application) : AndroidViewModel(application) {
@@ -18,10 +18,10 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         private const val TAG = "RecordingViewModel"
     }
     
-    private val dao = RecordingDatabase.getDatabase(application).recordingDao()
+    private val dao = AppDatabase.getDatabase(application).recordingDao()
     
     // Список всех записей
-    val recordings: LiveData<List<Recording>> = dao.getAllRecordings()
+    val recordings: LiveData<List<Recording>> = dao.getAllRecordings().asLiveData()
     
     // Состояние загрузки
     private val _isLoading = MutableLiveData<Boolean>()
@@ -44,9 +44,12 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 _isLoading.value = true
-                val recording = Recording(text = text.trim())
-                dao.insertRecording(recording)
-                Log.i(TAG, "Recording added successfully: ${recording.id}")
+                val recording = Recording(
+                    title = "Запись ${System.currentTimeMillis()}",
+                    transcription = text.trim()
+                )
+                dao.insert(recording)
+                Log.i(TAG, "Recording added successfully")
             } catch (e: Exception) {
                 Log.e(TAG, "Error adding recording: ${e.message}", e)
                 _errorMessage.value = "Ошибка сохранения записи: ${e.message}"
@@ -63,7 +66,7 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 _isLoading.value = true
-                dao.deleteRecording(recording)
+                dao.delete(recording)
                 Log.i(TAG, "Recording deleted: ${recording.id}")
             } catch (e: Exception) {
                 Log.e(TAG, "Error deleting recording: ${e.message}", e)
@@ -87,8 +90,8 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             try {
                 _isLoading.value = true
-                val updatedRecording = recording.copy(text = newText.trim())
-                dao.updateRecording(updatedRecording)
+                val updatedRecording = recording.copy(transcription = newText.trim())
+                dao.update(updatedRecording)
                 Log.i(TAG, "Recording updated: ${recording.id}")
             } catch (e: Exception) {
                 Log.e(TAG, "Error updating recording: ${e.message}", e)

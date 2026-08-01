@@ -7,8 +7,8 @@ import androidx.room.PrimaryKey
 data class Recording(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,
-    val title: String,
-    val transcription: String,
+    val title: String = "",
+    val transcription: String = "",
     val timestamp: Long = System.currentTimeMillis(),
     val durationSeconds: Int = 0
 )

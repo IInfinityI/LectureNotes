@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface RecordingDao {
+    
     @Query("SELECT * FROM recordings ORDER BY timestamp DESC")
     fun getAllRecordings(): Flow<List<Recording>>
     
