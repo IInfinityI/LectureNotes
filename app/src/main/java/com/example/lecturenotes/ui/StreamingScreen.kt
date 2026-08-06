@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.lecturenotes.transcription.TranscriptionState
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StreamingScreen(
     uiState: TranscriptionState,

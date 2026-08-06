@@ -1,190 +1,186 @@
 ﻿package com.example.lecturenotes.ui
 
 import android.app.Application
+import android.content.Intent
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.lecturenotes.RecordingService
 import com.example.lecturenotes.data.AppDatabase
 import com.example.lecturenotes.data.Recording
+import com.example.lecturenotes.transcription.TranscriptionState
+import com.example.lecturenotes.transcription.WhisperTranscriber
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
-/**
- * Состояние UI для списка записей.
- */
-sealed class RecordingsUiState {
-    data object Loading : RecordingsUiState()
-    data class Success(val recordings: List<Recording>) : RecordingsUiState()
-    data class Error(val message: String) : RecordingsUiState()
-}
-
-/**
- * ViewModel для управления записями лекций.
- * 
- * ОТВЕТСТВЕННОСТЬ:
- * - Получение списка записей из БД
- * - Добавление новых записей
- * - Обновление и удаление записей
- * - Управление состоянием UI (загрузка/успех/ошибка)
- * 
- * КОНТРАКТЫ:
- * - allRecordings: StateFlow<RecordingsUiState> — текущее состояние списка
- * - addRecording(transcription, durationSeconds, audioPath) — сохранить новую запись
- * - updateRecording(recording) — обновить существующую
- * - deleteRecording(recording) — удалить запись
- * - clearError() — сбросить состояние ошибки
- */
 class RecordingViewModel(application: Application) : AndroidViewModel(application) {
-    
+
+    companion object {
+        private const val TAG = "RecordingViewModel"
+    }
+
     private val dao = AppDatabase.getDatabase(application).recordingDao()
-    
-    // Состояние UI для списка записей
-    private val _uiState = MutableStateFlow<RecordingsUiState>(RecordingsUiState.Loading)
-    val uiState: StateFlow<RecordingsUiState> = _uiState.asStateFlow()
-    
-    // Сырой Flow из БД (для внутреннего использования)
-    val allRecordings: StateFlow<List<Recording>> = dao.getAllRecordings()
+    private val transcriber = WhisperTranscriber(application)
+
+    // --- UI State для StreamingScreen ---
+    private val _uiState = MutableStateFlow(TranscriptionState())
+    val uiState: StateFlow<TranscriptionState> = _uiState.asStateFlow()
+
+    // --- Список записей из БД (Flow) ---
+    val recordings: StateFlow<List<Recording>> = dao.getAllRecordings()
         .stateIn(
             scope = viewModelScope,
-            started = SharingStarted.Eagerly, // Немедленная подписка для актуальности
+            started = SharingStarted.Lazily,
             initialValue = emptyList()
         )
-    
-    // Состояние операции сохранения
-    private val _saveOperationState = MutableStateFlow<SaveOperationState>(SaveOperationState.Idle)
-    val saveOperationState: StateFlow<SaveOperationState> = _saveOperationState.asStateFlow()
-    
+
+    // --- Ошибки ---
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    private var audioCollectionJob: Job? = null
+
     init {
-        // Загружаем записи при создании ViewModel
-        loadRecordings()
-    }
-    
-    /**
-     * Загрузка списка записей из БД.
-     * Обновляет _uiState в зависимости от результата.
-     */
-    private fun loadRecordings() {
+        // Инициализация модели Whisper при создании ViewModel
         viewModelScope.launch {
-            _uiState.value = RecordingsUiState.Loading
-            try {
-                allRecordings.collect { recordings ->
-                    _uiState.value = RecordingsUiState.Success(recordings)
-                }
-            } catch (e: Exception) {
-                _uiState.value = RecordingsUiState.Error(
-                    message = "Ошибка загрузки записей: ${e.localizedMessage ?: "неизвестная ошибка"}"
-                )
+            val success = transcriber.initialize()
+            if (!success) {
+                _uiState.value = _uiState.value.copy(error = "Не удалось загрузить модель Whisper")
+                Log.e(TAG, "Failed to initialize Whisper model")
             }
         }
     }
-    
+
     /**
-     * Сохранение новой записи в БД.
-     * 
-     * @param transcription Распознанный текст
-     * @param durationSeconds Длительность записи в секундах (0 если неизвестно)
-     * @param audioPath Путь к аудиофайлу (null если не сохранён)
+     * Запуск записи через RecordingService + подписка на аудио-чанки.
      */
-    fun addRecording(
-        transcription: String,
-        durationSeconds: Int = 0,
-        audioPath: String? = null
-    ) {
-        if (transcription.isBlank()) {
-            _saveOperationState.value = SaveOperationState.Error("Транскрипция пуста")
+    fun startRecording() {
+        if (_uiState.value.isRecording) return
+
+        // Очищаем предыдущее состояние
+        _uiState.value = TranscriptionState(isRecording = true)
+
+        // Запускаем сервис записи
+        val context = getApplication<Application>()
+        val intent = Intent(context, RecordingService::class.java).apply {
+            action = RecordingService.ACTION_START
+        }
+        context.startForegroundService(intent)
+
+        // Подписываемся на аудио-чанки и транскрибируем
+        audioCollectionJob = viewModelScope.launch {
+            RecordingService.audioChunks.collect { chunk ->
+                val text = transcriber.processChunk(chunk)
+                if (text.isNotBlank()) {
+                    val currentLive = _uiState.value.liveText
+                    val newLive = if (currentLive.isEmpty()) text.trim() else "$currentLive $text".trim()
+                    _uiState.value = _uiState.value.copy(
+                        liveText = newLive,
+                        wordCount = newLive.split("\\s+".toRegex()).filter { it.isNotBlank() }.size
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Остановка записи. Финализированный текст остаётся в state.
+     */
+    fun stopRecording() {
+        if (!_uiState.value.isRecording) return
+
+        _uiState.value = _uiState.value.copy(isFinalizing = true)
+
+        // Останавливаем сервис
+        val context = getApplication<Application>()
+        val intent = Intent(context, RecordingService::class.java).apply {
+            action = RecordingService.ACTION_STOP
+        }
+        context.startService(intent)
+
+        // Отписываемся от аудио
+        audioCollectionJob?.cancel()
+        audioCollectionJob = null
+
+        // Переносим liveText в finalizedText
+        val finalText = _uiState.value.fullText
+        _uiState.value = _uiState.value.copy(
+            isRecording = false,
+            isFinalizing = false,
+            finalizedText = finalText,
+            liveText = ""
+        )
+    }
+
+    /**
+     * Сохранение текущей транскрибации в БД.
+     */
+    fun saveRecording() {
+        val text = _uiState.value.fullText
+        if (text.isBlank()) {
+            _errorMessage.value = "Нечего сохранять: текст пустой"
             return
         }
-        
+
         viewModelScope.launch {
-            _saveOperationState.value = SaveOperationState.Saving
             try {
-                val dateFormat = SimpleDateFormat("dd.MM HH:mm", Locale.getDefault())
-                val title = "Запись ${dateFormat.format(Date())}"
-                
                 val recording = Recording(
-                    title = title,
-                    transcription = transcription.trim(),
-                    durationSeconds = durationSeconds,
-                    audioPath = audioPath
+                    title = "Запись ${System.currentTimeMillis()}",
+                    transcription = text.trim()
                 )
-                
-                val id = dao.insert(recording)
-                
-                if (id > 0) {
-                    _saveOperationState.value = SaveOperationState.Success
-                    // Сбрасываем состояние через 2 секунды
-                    kotlinx.coroutines.delay(2000)
-                    _saveOperationState.value = SaveOperationState.Idle
-                } else {
-                    _saveOperationState.value = SaveOperationState.Error("Не удалось сохранить запись")
-                }
+                dao.insert(recording)
+                Log.i(TAG, "Recording saved successfully")
+
+                // Очищаем state после сохранения
+                _uiState.value = TranscriptionState()
             } catch (e: Exception) {
-                _saveOperationState.value = SaveOperationState.Error(
-                    message = e.localizedMessage ?: "Ошибка сохранения"
-                )
+                Log.e(TAG, "Error saving recording", e)
+                _errorMessage.value = "Ошибка сохранения: ${e.message}"
             }
         }
     }
-    
+
     /**
-     * Обновление существующей записи.
-     */
-    fun updateRecording(recording: Recording) {
-        viewModelScope.launch {
-            try {
-                dao.update(recording)
-            } catch (e: Exception) {
-                _saveOperationState.value = SaveOperationState.Error(
-                    message = "Ошибка обновления: ${e.localizedMessage}"
-                )
-            }
-        }
-    }
-    
-    /**
-     * Удаление записи.
+     * Удаление записи из БД.
      */
     fun deleteRecording(recording: Recording) {
         viewModelScope.launch {
             try {
                 dao.delete(recording)
+                Log.i(TAG, "Recording deleted: ${recording.id}")
             } catch (e: Exception) {
-                _saveOperationState.value = SaveOperationState.Error(
-                    message = "Ошибка удаления: ${e.localizedMessage}"
-                )
+                Log.e(TAG, "Error deleting recording", e)
+                _errorMessage.value = "Ошибка удаления: ${e.message}"
             }
         }
     }
-    
-    /**
-     * Сброс состояния ошибки.
-     */
+
     fun clearError() {
-        _saveOperationState.value = SaveOperationState.Idle
+        _errorMessage.value = null
+        _uiState.value = _uiState.value.copy(error = null)
     }
-    
-    /**
-     * Получение записи по ID (для редактирования).
-     */
-    fun getRecordingById(id: Long): Recording? {
-        return (uiState.value as? RecordingsUiState.Success)
-            ?.recordings
-            ?.find { it.id == id }
+
+    override fun onCleared() {
+        super.onCleared()
+        transcriber.shutdown()
+        audioCollectionJob?.cancel()
+        Log.i(TAG, "ViewModel cleared")
     }
 }
 
-/**
- * Состояние операции сохранения.
- */
-sealed class SaveOperationState {
-    data object Idle : SaveOperationState()
-    data object Saving : SaveOperationState()
-    data object Success : SaveOperationState()
-    data class Error(val message: String) : SaveOperationState()
+class RecordingViewModelFactory(private val application: Application) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(RecordingViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return RecordingViewModel(application) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
+    }
 }
