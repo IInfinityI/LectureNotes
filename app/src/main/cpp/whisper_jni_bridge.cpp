@@ -131,7 +131,14 @@ Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeChunk(
     wparams.translate = false;
     wparams.language = lang_str;
     wparams.n_threads = 2;
-    wparams.no_context = true;
+    
+    // ИСПРАВЛЕНО: Устанавливаем no_context в false, чтобы модель сохраняла контекст
+    // между чанками стриминга. Это предотвращает галлюцинации и повторы.
+    wparams.no_context = false;
+    
+    // Дополнительные оптимизации для стриминга
+    wparams.single_segment = true;
+    wparams.no_timestamps = true;
 
     if (whisper_full(ctx, wparams, pcmf32.data(), static_cast<int>(pcmf32.size())) != 0) {
         LOGE("whisper_full failed for chunk");

@@ -1,154 +1,204 @@
 #include <jni.h>
-#include <android/log.h>
 #include <string>
+#include <thread>
 #include <vector>
-#include <fstream>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <android/log.h>
 #include "whisper.h"
 
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "LectureNotes", __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "LectureNotes", __VA_ARGS__)
+#define TAG "WhisperJNI"
 
-// Глобальный контекст модели (живет между вызовами)
+static std::mutex g_mutex;
+static std::condition_variable g_cv;
+static std::queue<std::vector<float>> g_audio_queue;
+static bool g_stop_flag = false;
+
+// Глобальный контекст модели
 static struct whisper_context* g_ctx = nullptr;
-static std::string g_model_path = "";
 
-// Конвертация UTF-8 → UTF-16
-static jstring utf8ToJstring(JNIEnv* env, const std::string& utf8) {
-    if (utf8.empty()) return env->NewStringUTF("");
-    
-    std::u16string utf16;
-    for (size_t i = 0; i < utf8.size(); ) {
-        uint32_t cp = 0;
-        unsigned char c = utf8[i++];
-        
-        if (c < 0x80) {
-            cp = c;
-        } else if ((c & 0xE0) == 0xC0) {
-            cp = (c & 0x1F) << 6;
-            if (i < utf8.size()) cp |= utf8[i++] & 0x3F;
-        } else if ((c & 0xF0) == 0xE0) {
-            cp = (c & 0x0F) << 12;
-            if (i < utf8.size()) cp |= (utf8[i++] & 0x3F) << 6;
-            if (i < utf8.size()) cp |= utf8[i++] & 0x3F;
-        } else {
-            cp = (c & 0x07) << 18;
-            if (i < utf8.size()) cp |= (utf8[i++] & 0x3F) << 12;
-            if (i < utf8.size()) cp |= (utf8[i++] & 0x3F) << 6;
-            if (i < utf8.size()) cp |= utf8[i++] & 0x3F;
-        }
-        
-        if (cp <= 0xFFFF) {
-            utf16 += static_cast<char16_t>(cp);
-        } else {
-            cp -= 0x10000;
-            utf16 += static_cast<char16_t>(0xD800 | (cp >> 10));
-            utf16 += static_cast<char16_t>(0xDC00 | (cp & 0x3FF));
-        }
+// Глобальные параметры транскрибации
+static struct whisper_full_params g_wparams;
+
+// Буфер для промпта (контекст предыдущего текста)
+static std::string g_prompt_buffer = "";
+
+// Функция для логирования
+void log_message(const char* level, const char* msg) {
+    if (strcmp(level, "DEBUG") == 0) {
+        __android_log_print(ANDROID_LOG_DEBUG, TAG, "%s", msg);
+    } else if (strcmp(level, "INFO") == 0) {
+        __android_log_print(ANDROID_LOG_INFO, TAG, "%s", msg);
+    } else if (strcmp(level, "WARN") == 0) {
+        __android_log_print(ANDROID_LOG_WARN, TAG, "%s", msg);
+    } else if (strcmp(level, "ERROR") == 0) {
+        __android_log_print(ANDROID_LOG_ERROR, TAG, "%s", msg);
     }
-    
-    return env->NewString(reinterpret_cast<const jchar*>(utf16.c_str()), utf16.length());
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lecturenotes_MainActivity_stringFromJNI(JNIEnv* env, jobject) {
-    return env->NewStringUTF("Whisper.cpp loaded");
+// Worker-функция для обработки аудио из очереди
+void audio_worker() {
+    while (!g_stop_flag) {
+        std::unique_lock<std::mutex> lock(g_mutex);
+        g_cv.wait(lock, [] { return !g_audio_queue.empty() || g_stop_flag; });
+
+        if (g_stop_flag && g_audio_queue.empty()) {
+            break;
+        }
+
+        if (!g_audio_queue.empty()) {
+            auto audio_chunk = g_audio_queue.front();
+            g_audio_queue.pop();
+            lock.unlock();
+
+            if (g_ctx != nullptr) {
+                // Очищаем результаты предыдущей транскрибации
+                whisper_full_reset_timings(g_ctx);
+
+                // Обновляем промпт, если он используется
+                if (!g_prompt_buffer.empty()) {
+                    g_wparams.prompt_tokens = nullptr; // Сбрасываем, если используем строку
+                    g_wparams.n_prompt_tokens = 0;
+                }
+
+                // Устанавливаем текущий промпт (контекст)
+                g_wparams.initial_prompt = g_prompt_buffer.c_str();
+
+                // Устанавливаем параметры для стриминга: контекст сохраняется, но управляем окном
+                g_wparams.no_context = false; // ВАЖНО: теперь модель будет использовать контекст
+
+                // Применяем параметры к модели
+                if (whisper_full(g_ctx, g_wparams, audio_chunk.data(), audio_chunk.size()) != 0) {
+                    log_message("ERROR", "whisper_full failed");
+                    continue;
+                }
+
+                int n_segments = whisper_full_n_segments(g_ctx);
+                std::string new_text = "";
+                for (int i = 0; i < n_segments; ++i) {
+                    const char* text = whisper_full_get_segment_text(g_ctx, i);
+                    new_text += text;
+                }
+
+                // Обновляем промпт для следующего чанка (например, последние N токенов)
+                // Это помогает сохранить контекст между чанками
+                if (!new_text.empty()) {
+                    g_prompt_buffer += new_text; // Простое добавление текста
+                    // Можно ограничить размер буфера, если нужно
+                    const size_t max_prompt_len = 512; // Пример ограничения
+                    if (g_prompt_buffer.length() > max_prompt_len) {
+                        g_prompt_buffer = g_prompt_buffer.substr(g_prompt_buffer.length() - max_prompt_len);
+                    }
+                }
+
+                // Логируем результат
+                log_message("INFO", ("New segment: " + new_text).c_str());
+            }
+        }
+    }
 }
 
-// ИНИЦИАЛИЗАЦИЯ МОДЕЛИ (привязана к WhisperTranscriber)
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_lecturenotes_transcription_WhisperTranscriber_initModel(
-    JNIEnv* env, jobject, jstring model_path) {
-    
-    const char* modelPath = env->GetStringUTFChars(model_path, 0);
-    
-    if (g_ctx != nullptr && g_model_path == modelPath) {
-        env->ReleaseStringUTFChars(model_path, modelPath);
-        LOGI("Model already loaded");
-        return JNI_TRUE;
+// JNI: Инициализация модели
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_whisperkotlin_WhisperTranscriber_initModel(JNIEnv *env, jobject thiz, jstring modelPath_) {
+    const char *modelPath = env->GetStringUTFChars(modelPath_, 0);
+    log_message("INFO", ("Loading model: " + std::string(modelPath)).c_str());
+
+    g_ctx = whisper_init_from_file(modelPath);
+    if (g_ctx == nullptr) {
+        log_message("ERROR", "Failed to initialize Whisper model");
+        env->ReleaseStringUTFChars(modelPath_, modelPath);
+        return;
     }
-    
+
+    // Инициализируем параметры транскрибации
+    g_wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+    g_wparams.print_progress = false;
+    g_wparams.print_realtime = false;
+    g_wparams.print_timestamps = false;
+    g_wparams.translate = false;
+    g_params.language = "auto";
+    g_wparams.n_threads = 4; // Установи количество потоков по необходимости
+    g_wparams.audio_ctx = 0; // 0 = default
+    g_wparams.speed_up = false;
+    g_wparams.token_timestamps = false;
+    g_wparams.suppress_non_speech_tokens = false;
+    g_wparams.temperature = 0.0f;
+    g_wparams.max_len = 0;
+    g_wparams.split_on_word = false;
+
+    // Устанавливаем no_context в false для стриминга
+    g_wparams.no_context = false;
+
+    env->ReleaseStringUTFChars(modelPath_, modelPath);
+
+    log_message("INFO", "Model loaded successfully");
+}
+
+// JNI: Загрузка аудио чанка в очередь
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_whisperkotlin_WhisperTranscriber_loadAudioChunk(JNIEnv *env, jobject thiz, jfloatArray audioData) {
+    jsize len = env->GetArrayLength(audioData);
+    jfloat* audioPtr = env->GetFloatArrayElements(audioData, nullptr);
+
+    std::vector<float> chunk(audioPtr, audioPtr + len);
+    env->ReleaseFloatArrayElements(audioData, audioPtr, JNI_ABORT);
+
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_audio_queue.push(chunk);
+    }
+    g_cv.notify_one();
+}
+
+// JNI: Запуск обработки аудио (в отдельном потоке)
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_whisperkotlin_WhisperTranscriber_startProcessing(JNIEnv *env, jobject thiz) {
+    g_stop_flag = false;
+    std::thread worker_thread(audio_worker);
+    worker_thread.detach(); // Отсоединяем поток, он работает до остановки
+}
+
+// JNI: Остановка обработки
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_whisperkotlin_WhisperTranscriber_stopProcessing(JNIEnv *env, jobject thiz) {
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_stop_flag = true;
+    }
+    g_cv.notify_all();
+}
+
+// JNI: Получение текущего транскрибированного текста (промпта)
+extern "C"
+JNIEXPORT jstring JNICALL
+Java_com_example_whisperkotlin_WhisperTranscriber_getCurrentText(JNIEnv *env, jobject thiz) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return env->NewStringUTF(g_prompt_buffer.c_str());
+}
+
+// JNI: Очистка модели
+extern "C"
+JNIEXPORT void JNICALL
+Java_com_example_whisperkotlin_WhisperTranscriber_releaseModel(JNIEnv *env, jobject thiz) {
     if (g_ctx != nullptr) {
         whisper_free(g_ctx);
         g_ctx = nullptr;
     }
-    
-    whisper_context_params cparams = whisper_context_default_params();
-    g_ctx = whisper_init_from_file_with_params(modelPath, cparams);
-    
-    if (!g_ctx) {
-        LOGE("Failed to load model from: %s", modelPath);
-        env->ReleaseStringUTFChars(model_path, modelPath);
-        return JNI_FALSE;
-    }
-    
-    g_model_path = modelPath;
-    env->ReleaseStringUTFChars(model_path, modelPath);
-    LOGI("Model loaded successfully");
-    return JNI_TRUE;
-}
-
-// ОСВОБОЖДЕНИЕ МОДЕЛИ (привязана к WhisperTranscriber)
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_lecturenotes_transcription_WhisperTranscriber_releaseModel(JNIEnv* env, jobject) {
-    if (g_ctx != nullptr) {
-        whisper_free(g_ctx);
-        g_ctx = nullptr;
-        g_model_path = "";
-        LOGI("Model released");
-    }
-}
-
-// ТРАНСКРИБАЦИЯ ЧАНКА (привязана к WhisperTranscriber)
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeChunk(
-    JNIEnv* env, jobject, jbyteArray audio_data, jstring language) {
-    
-    if (g_ctx == nullptr) {
-        LOGE("Model not initialized! Call initModel() first");
-        return env->NewStringUTF("");
-    }
-    
-    jsize length = env->GetArrayLength(audio_data);
-    if (length < 32000) return env->NewStringUTF("");
-    
-    jbyte* buffer = env->GetByteArrayElements(audio_data, 0);
-    short* pcm_s16 = reinterpret_cast<short*>(buffer);
-    size_t samples = length / sizeof(short);
-    std::vector<float> pcmf32(samples);
-    for (size_t i = 0; i < samples; i++) {
-        pcmf32[i] = static_cast<float>(pcm_s16[i]) / 32768.0f;
-    }
-    env->ReleaseByteArrayElements(audio_data, buffer, 0);
-    
-    const char* lang = env->GetStringUTFChars(language, 0);
-    
-    whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    wparams.print_progress = false;
-    wparams.print_special = false;
-    wparams.print_realtime = false;
-    wparams.print_timestamps = false;
-    wparams.translate = false;
-    wparams.language = lang;
-    wparams.n_threads = 4;
-    wparams.no_context = true;
-    
-    std::string text = "";
-    if (whisper_full(g_ctx, wparams, pcmf32.data(), pcmf32.size()) == 0) {
-        int n = whisper_full_n_segments(g_ctx);
-        for (int i = 0; i < n; ++i) {
-            text += whisper_full_get_segment_text(g_ctx, i);
+    // Очищаем глобальные переменные
+    g_prompt_buffer.clear();
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        while (!g_audio_queue.empty()) {
+            g_audio_queue.pop();
         }
+        g_stop_flag = true;
     }
-    
-    env->ReleaseStringUTFChars(language, lang);
-    return utf8ToJstring(env, text);
+    g_cv.notify_all();
+    log_message("INFO", "Model released");
 }
-
-// ТРАНСКРИБАЦИЯ АУДИОФАЙЛА (привязана к WhisperTranscriber)
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeAudio(
-    JNIEnv* env, jobject, jstring audio_path, jstring language) {
-    
-    if (g_ctx == nullptr) {
-        LOGE("Model not initialized! Call initModel() first");
-        return env->New

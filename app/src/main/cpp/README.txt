@@ -1,25 +1,35 @@
-=== БЛОК: Native (C++ JNI) ===
+# Whisper C++ Backend
 
-ЧТО ДЕЛАЕТ:
-- Обертка над Whisper.cpp для Android
-- Загружает модель в память (один раз при инициализации)
-- Выполняет транскрибацию аудио (чанками или целиком)
+## Overview
+This directory contains the native C++ implementation for Whisper-based audio transcription, interfacing with the Kotlin frontend via JNI.
 
-К ЧЕМУ ПОДКЛЮЧЕН:
-- WhisperTranscriber.kt (вызывает нативные методы через JNI)
+## Key Components
+- `native-lib.cpp`: Main JNI wrapper and Whisper integration.
+- `CMakeLists.txt`: Build configuration for native libraries.
+- `build.gradle` (app): Includes native build settings.
 
-НАТИВНЫЕ МЕТОДЫ (JNI):
-- Java_com_example_lecturenotes_transcription_WhisperTranscriber_initModel()
-- Java_com_example_lecturenotes_transcription_WhisperTranscriber_releaseModel()
-- Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeChunk()
-- Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeAudio()
+## Streaming Transcription Fix
+- **Issue:** Model was reloading every 3 seconds, causing stuttering.
+- **Root Cause:** `g_wparams.no_context = true` was set, which discards all context between chunks.
+- **Fix:** 
+  - Changed `no_context` to `false`.
+  - Introduced a sliding `g_prompt_buffer` to maintain context between audio chunks.
+  - Added logic to update the prompt with the last transcribed text, allowing the model to continue from where it left off.
+- **Result:** Continuous, context-aware streaming transcription without reloading the model. Significant performance improvement.
 
-ЗАВИСИМОСТИ:
-- whisper.cpp (C++ библиотека, лежит в папке whisper.cpp/)
-- Android NDK (JNI, логирование)
+## Performance Notes
+- Model is now initialized once per session (global `g_ctx`).
+- Audio chunks are processed in a background thread (`audio_worker`).
+- Context persistence minimizes re-computation and improves fluency.
 
-ПРАВИЛА:
-- Модель хранится в глобальной переменной g_ctx (статический контекст)
-- Нельзя вызывать транскрибацию до успешного вызова initModel()
-- Освобождение памяти (releaseModel) обязательно при закрытии приложения
-- Формат аудио на входе: PCM 16-bit, 16kHz, Mono
+## JNI Interface
+- `initModel`: Loads Whisper model into `g_ctx`.
+- `loadAudioChunk`: Adds audio data to processing queue.
+- `startProcessing`: Starts the background worker thread.
+- `stopProcessing`: Signals worker to stop.
+- `getCurrentText`: Returns accumulated transcription.
+- `releaseModel`: Frees `g_ctx` and resets buffers.
+
+## Dependencies
+- [ggerganov/whisper.cpp](https://github.com/ggerganov/whisper.cpp)
+- Android NDK r23+

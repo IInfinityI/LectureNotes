@@ -27,6 +27,8 @@ import com.example.lecturenotes.transcription.TranscriptionState
 @Composable
 fun StreamingScreen(
     uiState: TranscriptionState,
+    onStartClick: () -> Unit,
+    onStopClick: () -> Unit,
     onSaveClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onBackClick: () -> Unit
@@ -81,7 +83,6 @@ fun StreamingScreen(
                         fontWeight = FontWeight.Medium
                     )
                 }
-
                 Text(
                     text = "${uiState.wordCount} words",
                     fontSize = 12.sp,
@@ -168,7 +169,7 @@ fun StreamingScreen(
             ) {
                 if (uiState.isRecording || uiState.isFinalizing) {
                     Button(
-                        onClick = { /* Toggle recording handled by ViewModel */ },
+                        onClick = onStopClick,
                         enabled = !uiState.isFinalizing,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color.Red
@@ -180,7 +181,7 @@ fun StreamingScreen(
                     }
                 } else {
                     Button(
-                        onClick = { /* Start recording handled by ViewModel */ },
+                        onClick = onStartClick,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
                         )

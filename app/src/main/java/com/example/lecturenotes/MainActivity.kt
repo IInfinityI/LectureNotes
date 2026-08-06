@@ -43,6 +43,8 @@ class MainActivity : ComponentActivity() {
                             val uiState by recordingViewModel.uiState.collectAsState()
                             StreamingScreen(
                                 uiState = uiState,
+                                onStartClick = { recordingViewModel.startRecording() },
+                                onStopClick = { recordingViewModel.stopRecording() },
                                 onSaveClick = {
                                     recordingViewModel.saveRecording()
                                 },
@@ -50,11 +52,9 @@ class MainActivity : ComponentActivity() {
                                 onBackClick = { finish() }
                             )
                         }
-
                         composable("settings") {
                             val currentModelSize by settingsViewModel.modelSize.collectAsState()
                             val currentLanguage by settingsViewModel.language.collectAsState()
-
                             SettingsScreen(
                                 currentModelSize = currentModelSize,
                                 currentLanguage = currentLanguage,
@@ -66,9 +66,7 @@ class MainActivity : ComponentActivity() {
                                 onBackClick = { navController.popBackStack() }
                             )
                         }
-
                         composable("history") {
-                            // TODO: HistoryScreen
                             Text("History Screen - TODO")
                         }
                     }

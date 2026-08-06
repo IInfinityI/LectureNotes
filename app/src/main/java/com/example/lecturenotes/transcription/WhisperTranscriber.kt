@@ -18,7 +18,8 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
 
     companion object {
         private const val TAG = "WhisperTranscriber"
-        private const val DEFAULT_MODEL = "ggml-base.bin"
+        // ИСПРАВЛЕНО: имя файла модели соответствует реальному в assets/
+        private const val DEFAULT_MODEL = "ggml-base-q5_0.bin"
         private const val MIN_CHUNK_BYTES = 32000 // 1 сек: 16000 samples * 2 bytes
 
         init {
@@ -60,7 +61,7 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
 
             val modelPath = getModelPath(modelName)
             if (modelPath == null) {
-                Log.e(TAG, "Model file '$modelName' not found")
+                Log.e(TAG, "Model file '$modelName' not found in assets or copy failed")
                 return@withContext false
             }
 
@@ -71,7 +72,7 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
                 currentModelName = modelName
                 Log.i(TAG, "Model '$modelName' loaded from: $modelPath")
             } else {
-                Log.e(TAG, "Failed to load model '$modelName'")
+                Log.e(TAG, "Failed to load model '$modelName' from path: $modelPath")
             }
 
             success
@@ -86,16 +87,19 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
      */
     suspend fun processChunk(audioData: ByteArray, language: String = "ru"): String = withContext(Dispatchers.IO) {
         if (!isModelInitialized) {
-            Log.e(TAG, "Model not initialized")
+            Log.e(TAG, "Model not initialized. Cannot process chunk.")
             return@withContext ""
         }
 
         if (audioData.isEmpty() || audioData.size < MIN_CHUNK_BYTES) {
+            Log.d(TAG, "Chunk too small (${audioData.size} bytes), skipping.")
             return@withContext ""
         }
 
         try {
-            transcribeChunk(audioData, language)
+            val result = transcribeChunk(audioData, language)
+            Log.d(TAG, "Chunk transcribed: ${result.take(50)}...") // Логируем начало результата
+            result
         } catch (e: Exception) {
             Log.e(TAG, "Error transcribing chunk", e)
             ""
@@ -156,10 +160,13 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
     private fun getModelPath(modelName: String): String? {
         val internalFile = File(context.filesDir, modelName)
 
-        if (internalFile.exists() && internalFile.length() > 0) {
+        // Проверяем, есть ли уже скопированный файл и он не пустой (т.е. не Git LFS pointer)
+        if (internalFile.exists() && internalFile.length() > 1024) { // Порог в 1KB для уверенности
+            Log.i(TAG, "Using existing model from filesDir: $modelName (${internalFile.length()} bytes)")
             return internalFile.absolutePath
         }
 
+        // Копируем из assets
         return try {
             context.assets.open(modelName).use { input ->
                 FileOutputStream(internalFile).use { output ->
@@ -167,6 +174,12 @@ class WhisperTranscriber(private val context: Context) : AutoCloseable {
                 }
             }
             Log.i(TAG, "Model copied from assets: $modelName (${internalFile.length()} bytes)")
+            // Проверяем размер файла после копирования. Если меньше 10MB, это точно заглушка.
+            if (internalFile.length() < (10 * 1024 * 1024)) { // 10MB threshold
+                Log.e(TAG, "Copied model file is suspiciously small (<10MB). Check if it's a real model: ${internalFile.length()}")
+                internalFile.delete() // Удаляем заглушку
+                return null
+            }
             internalFile.absolutePath
         } catch (e: Exception) {
             Log.e(TAG, "Failed to copy model '$modelName' from assets", e)

@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.lecturenotes.RecordingService
 import com.example.lecturenotes.data.AppDatabase
+import com.example.lecturenotes.data.AudioChunkRepository
 import com.example.lecturenotes.data.Recording
 import com.example.lecturenotes.transcription.TranscriptionState
 import com.example.lecturenotes.transcription.WhisperTranscriber
@@ -74,9 +75,9 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         }
         context.startForegroundService(intent)
 
-        // Подписываемся на аудио-чанки и транскрибируем
+        // Подписываемся на аудио-чанки из Repository (новый способ)
         audioCollectionJob = viewModelScope.launch {
-            RecordingService.audioChunks.collect { chunk ->
+            AudioChunkRepository.audioChunks.collect { chunk ->
                 val text = transcriber.processChunk(chunk)
                 if (text.isNotBlank()) {
                     val currentLive = _uiState.value.liveText
