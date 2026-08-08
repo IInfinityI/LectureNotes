@@ -61,22 +61,47 @@ class DefaultTextProcessor(
     override fun solveArithmetic(text: String): String {
         if (text.isBlank()) return text
 
-        // Ищем паттерны: число [оператор число]+
-        // Поддерживаем: + - * / ( ) и десятичные дроби
-        val expressionPattern = Regex(
-            """\d+(?:[.,]\d+)?(?:\s*[+\-*/]\s*\d+(?:[.,]\d+)?)+"""
-        )
+        var result = text
 
-        return expressionPattern.replace(text) { match ->
-            val expr = match.value
+        // Шаг 1: Обрабатываем выражения с "=" (равно)
+        // Паттерн: выражение = → вычисляем и заменяем на "выражение = результат"
+        val equalsPattern = Regex(
+            """(\d+(?:[.,]\d+)?(?:\s*[+\-*/^]\s*\d+(?:[.,]\d+)?)+)\s*="""
+        )
+        result = equalsPattern.replace(result) { match ->
+            val expr = match.groupValues[1]
             val normalized = expr.replace(",", ".")
-            val result = evaluate(normalized)
-            if (result != null) {
-                "$expr (=${formatNumber(result)})"
+            val evalResult = evaluate(normalized)
+            if (evalResult != null) {
+                "$expr = ${formatNumber(evalResult)}"
             } else {
-                expr // не удалось вычислить — оставляем как есть
+                match.value
             }
         }
+
+        // Шаг 2: Обрабатываем выражения без "=" (просто считаем и добавляем результат)
+        // Поддерживаем: + - * / ^ и десятичные дроби
+        val expressionPattern = Regex(
+            """\d+(?:[.,]\d+)?(?:\s*[+\-*/^]\s*\d+(?:[.,]\d+)?)+"""
+        )
+
+        result = expressionPattern.replace(result) { match ->
+            val expr = match.value
+            // Пропускаем если уже обработано (содержит "=")
+            if (result.contains("$expr =")) {
+                expr
+            } else {
+                val normalized = expr.replace(",", ".")
+                val evalResult = evaluate(normalized)
+                if (evalResult != null) {
+                    "$expr (=${formatNumber(evalResult)})"
+                } else {
+                    expr
+                }
+            }
+        }
+
+        return result
     }
 
     // ─── НОРМАЛИЗАЦИЯ ────────────────────────────────────────────────────
@@ -90,7 +115,12 @@ class DefaultTextProcessor(
     }
 
     // ─── ПАРСЕР АРИФМЕТИКИ (recursive descent) ───────────────────────────
-    // Безопасная замена eval. Поддерживает + - * / ( ) и унарный минус.
+    // Безопасная замена eval. Поддерживает + - * / ^ ( ) и унарный минус.
+    // Грамматика:
+    //   expression = term (('+' | '-') term)*
+    //   term       = power (('*' | '/') power)*
+    //   power      = factor ('^' factor)*
+    //   factor     = ['-'] (NUMBER | '(' expression ')')
 
     private fun evaluate(expression: String): Double? {
         return try {
@@ -141,8 +171,8 @@ class DefaultTextProcessor(
             "красная строка" to "\n",
             // Спецсимволы
             "процент" to "%",
-            "степень" to "^",
-            "корень из" to "√"
+            "степень" to "^"
+            // "корень из" удалён — парсер не поддерживает унарный √
         )
     }
 }
@@ -151,7 +181,8 @@ class DefaultTextProcessor(
 // Вынесен в private class, чтобы не засорять namespace модуля.
 // Грамматика:
 //   expression = term (('+' | '-') term)*
-//   term       = factor (('*' | '/') factor)*
+//   term       = power (('*' | '/') power)*
+//   power      = factor ('^' factor)*
 //   factor     = ['-'] (NUMBER | '(' expression ')')
 
 private class ArithmeticParser(private val input: String) {
@@ -170,14 +201,24 @@ private class ArithmeticParser(private val input: String) {
     }
 
     private fun parseTerm(): Double {
-        var result = parseFactor()
+        var result = parsePower()
         while (pos < input.length && (input[pos] == '*' || input[pos] == '/')) {
             val op = input[pos++]
-            val right = parseFactor()
+            val right = parsePower()
             if (op == '/' && right == 0.0) throw ArithmeticException("Division by zero")
             result = if (op == '*') result * right else result / right
         }
         return result
+    }
+
+    private fun parsePower(): Double {
+        var base = parseFactor()
+        while (pos < input.length && input[pos] == '^') {
+            pos++ // skip '^'
+            val exponent = parseFactor()
+            base = Math.pow(base, exponent)
+        }
+        return base
     }
 
     private fun parseFactor(): Double {
