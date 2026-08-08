@@ -8,11 +8,19 @@
 - Управляет настройками (SettingsScreen)
 - Управляет состоянием через RecordingViewModel и SettingsViewModel
 
+ДВУХПОТОЧНАЯ АРХИТЕКТУРА (Приоритет 3):
+- Streaming-модель (tiny): быстрая live-транскрибация во время записи
+- Final-модель (base-q5_0): точная транскрибация при сохранении
+- Модели загружаются независимо в пуле (native-слой)
+- processChunk() использует streaming-модель
+- processFile() использует финальную модель (при сохранении)
+
 К ЧЕМУ ПОДКЛЮЧЕН:
-- WhisperTranscriber (инициализация модели, транскрибация чанков)
+- WhisperTranscriber (инициализация моделей, транскрибация чанков и файлов)
 - RecordingService (аудио-чанки через Flow из AudioChunkRepository)
 - TextProcessor (постобработка текста: голосовые команды в live, полный pipeline при финализации)
 - Room DAO (история записей)
+- SettingsViewModel (настройки языка и модели)
 
 КОНТРАКТЫ RecordingViewModel:
 - uiState: StateFlow<TranscriptionState> — состояние экрана записи
@@ -25,27 +33,17 @@
 - updateRecordingTitle(id, newTitle) — переименование записи
 - errorMessage: StateFlow<String?> — ошибки для UI
 
-КОНТРАКТЫ ЭКРАНОВ:
-- StreamingScreen(uiState, onStartClick, onStopClick, onSaveClick, onSettingsClick, onHistoryClick, onBackClick)
-- RecordingsListScreen(viewModel, onNavigateToRecording, onNavigateToSettings, onBack)
-- RecordingDetailScreen(recordingId, viewModel, onBack, onDelete)
-- SettingsScreen(currentModelSize, currentLanguage, ...)
-
-НАВИГАЦИЯ:
-- streaming → settings (onSettingsClick)
-- streaming → history (onHistoryClick)
-- history → detail/{recordingId} (onNavigateToRecording)
-- detail → history (onBack или onDelete с автоматическим popBackStack)
-- settings → streaming (onBackClick)
-- history → streaming (onBack)
-
 ОБРАБОТКА ТЕКСТА:
 - Во время live-записи применяется только TextProcessor.applyVoiceCommands()
-- После остановки применяется полный TextProcessor.process()
-- Это предотвращает повторное вычисление арифметики и дублирование результатов
+- При сохранении выполняется финальная транскрибация через processFile()
+- Результат финальной транскрибации проходит полный TextProcessor.process()
+- Fallback: если финальная транскрибация не удалась — используется live-текст
 
-ЛОКАЛИЗАЦИЯ:
-- StreamingScreen полностью локализован на русский язык
+ИНТЕГРАЦИЯ С НАСТРОЙКАМИ:
+- RecordingViewModel получает SettingsViewModel через конструктор
+- Язык читается из settingsViewModel.language при старте записи
+- Размер модели для стриминга ВСЕГДА tiny (не зависит от настроек)
+- Подписка на settingsChanged для реактивного переключения модели
 
 ЗАВИСИМОСТИ:
 - AndroidX Lifecycle
@@ -55,6 +53,8 @@
 - lifecycle-runtime-compose (collectAsStateWithLifecycle)
 - Room через data-блок
 - textprocessor-блок
+- transcription-блок
+- SettingsViewModel
 
 ПРАВИЛА:
 - UI не содержит бизнес-логику
@@ -63,16 +63,10 @@
 - Состояние экрана только через StateFlow
 
 ИСТОРИЯ ИЗМЕНЕНИЙ:
-08.08.2026 - StreamingScreen: добавлена кнопка истории
-  * Добавлен параметр onHistoryClick в сигнатуру
-  * Добавлена IconButton с Icons.Filled.List в TopAppBar
-  * Локализация всех текстов на русский
-08.08.2026 - MainActivity: подключены экраны истории
-  * Роут "history" теперь содержит RecordingsListScreen
-  * Добавлен роут "detail/{recordingId}" для RecordingDetailScreen
-  * При удалении записи на детальном экране — автоматический popBackStack
-08.08.2026 - RecordingViewModel расширен:
-  * Добавлены allRecordings, getRecordingById, deleteRecording(id), updateRecordingTitle
-  * Подключён TextProcessor (voice commands в live, полный pipeline при финализации)
-  * Добавлен расчёт durationSeconds
-  * Исправлен regex для wordCount: "s+" → "\\s+"
+08.08.2026 - Приоритет 3: интеграция двухпоточной архитектуры
+  * RecordingViewModel получает SettingsViewModel через конструктор
+  * startRecording() читает язык из настроек
+  * saveRecording() выполняет финальную транскрибацию через processFile()
+  * Добавлен fallback на live-текст если финальная транскрибация не удалась
+  * Защита от race condition: нельзя сохранить во время записи
+  * Подписка на settingsChanged для реактивного переключения модели

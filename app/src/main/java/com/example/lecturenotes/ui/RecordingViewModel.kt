@@ -15,21 +15,25 @@ import com.example.lecturenotes.textprocessor.DefaultTextProcessor
 import com.example.lecturenotes.textprocessor.TextProcessor
 import com.example.lecturenotes.transcription.TranscriptionState
 import com.example.lecturenotes.transcription.WhisperTranscriber
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.firstOrNull
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
-class RecordingViewModel(application: Application) : AndroidViewModel(application) {
+class RecordingViewModel(
+    application: Application,
+    private val settingsViewModel: SettingsViewModel
+) : AndroidViewModel(application) {
 
     companion object {
         private const val TAG = "RecordingViewModel"
+        private const val RECORDING_FILE = "recording_live.pcm"
     }
 
     private val dao = AppDatabase.getDatabase(application).recordingDao()
@@ -48,7 +52,6 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
             initialValue = emptyList()
         )
 
-    // Контракт для RecordingsListScreen
     val allRecordings: StateFlow<List<Recording>>
         get() = recordings
 
@@ -57,12 +60,15 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     private var audioCollectionJob: Job? = null
+    private var settingsJob: Job? = null
     private var recordingStartedAt: Long = 0L
     private var lastDurationSeconds: Int = 0
 
     init {
+        // Инициализация streaming-модели (tiny)
         viewModelScope.launch {
-            val success = transcriber.initialize()
+            val modelSize = settingsViewModel.modelSize.value
+            val success = initializeStreamingModel(modelSize)
             if (!success) {
                 _uiState.value = _uiState.value.copy(
                     error = "Не удалось загрузить модель Whisper"
@@ -70,12 +76,34 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
                 Log.e(TAG, "Failed to initialize Whisper model")
             }
         }
+
+        // Подписка на изменения настроек
+        settingsJob = viewModelScope.launch {
+            settingsViewModel.settingsChanged.collect { timestamp ->
+                // Если запись не идёт — переинициализируем модель
+                if (!_uiState.value.isRecording) {
+                    val modelSize = settingsViewModel.modelSize.value
+                    Log.i(TAG, "Settings changed, reinitializing model: $modelSize")
+                    initializeStreamingModel(modelSize)
+                } else {
+                    Log.w(TAG, "Settings changed but recording is active - changes will apply after stop")
+                }
+            }
+        }
     }
 
     /**
-     * Контракт для RecordingDetailScreen.
+     * Инициализация streaming-модели (tiny) с учётом настроек.
      */
-    fun getRecordingById(id: Long): Flow<Recording?> {
+    private suspend fun initializeStreamingModel(modelSize: String): Boolean {
+        // Для стриминга ВСЕГДА используем tiny, независимо от настроек
+        // Настройки влияют только на финальную модель
+        val streamingModelName = "ggml-tiny.bin"
+        Log.i(TAG, "Initializing streaming model: $streamingModelName")
+        return transcriber.initialize(streamingModelName)
+    }
+
+    fun getRecordingById(id: Long): kotlinx.coroutines.flow.Flow<Recording?> {
         return recordings.map { list ->
             list.find { it.id == id }
         }
@@ -97,13 +125,16 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         }
         context.startForegroundService(intent)
 
+        // Читаем текущие настройки
+        val currentLanguage = settingsViewModel.language.value
+
         audioCollectionJob = viewModelScope.launch {
             AudioChunkRepository.audioChunks.collect { chunk ->
-                val rawText = transcriber.processChunk(chunk)
+                // Используем streaming-модель (tiny) для live-транскрибации
+                val rawText = transcriber.processChunk(chunk, currentLanguage)
 
                 if (rawText.isNotBlank()) {
-                    // В live-режиме применяем только голосовые команды.
-                    // Арифметика и финальная нормализация — при остановке.
+                    // В live-режиме применяем только голосовые команды
                     val processedText = textProcessor.applyVoiceCommands(rawText).trim()
 
                     if (processedText.isNotBlank()) {
@@ -150,6 +181,8 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         audioCollectionJob?.cancel()
         audioCollectionJob = null
 
+        // Переносим liveText в finalizedText (без финальной транскрибации)
+        // Финальная транскрибация будет при сохранении
         val rawFinalText = _uiState.value.fullText
         val finalText = if (rawFinalText.isBlank()) {
             ""
@@ -170,36 +203,67 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
 
     /**
      * Сохранение текущей транскрибации в БД.
+     * Выполняет финальную транскрибацию через base-модель перед сохранением.
      */
     fun saveRecording() {
-        val finalized = _uiState.value.finalizedText
-        val textToSave = if (finalized.isNotBlank()) {
-            finalized
-        } else {
-            val rawText = _uiState.value.fullText
-            if (rawText.isBlank()) {
-                _errorMessage.value = "Нечего сохранять: текст пустой"
-                return
-            }
-            textProcessor.process(rawText)
-        }.trim()
-
-        if (textToSave.isBlank()) {
-            _errorMessage.value = "Нечего сохранять: текст пустой"
+        if (_uiState.value.isRecording) {
+            _errorMessage.value = "Нельзя сохранить во время записи. Сначала остановите запись."
             return
-        }
-
-        val durationSeconds = if (_uiState.value.isRecording && recordingStartedAt > 0L) {
-            ((System.currentTimeMillis() - recordingStartedAt) / 1000L).toInt()
-        } else {
-            lastDurationSeconds
         }
 
         viewModelScope.launch {
             try {
+                val currentLanguage = settingsViewModel.language.value
+                val context = getApplication<Application>()
+                val audioPath = File(context.cacheDir, RECORDING_FILE).absolutePath
+                val audioFile = File(audioPath)
+
+                // Проверяем, существует ли аудиофайл
+                val hasAudioFile = audioFile.exists() && audioFile.length() > 32000
+
+                val textToSave = if (hasAudioFile) {
+                    // Финальная транскрибация через base-модель
+                    Log.i(TAG, "Performing final transcription with base model...")
+                    _uiState.value = _uiState.value.copy(isFinalizing = true)
+
+                    val finalTranscription = transcriber.processFile(audioPath, currentLanguage)
+                    
+                    _uiState.value = _uiState.value.copy(isFinalizing = false)
+
+                    if (finalTranscription.isNotBlank()) {
+                        Log.i(TAG, "Final transcription successful: ${finalTranscription.take(50)}...")
+                        textProcessor.process(finalTranscription)
+                    } else {
+                        // Fallback: используем live-текст если финальная транскрибация не удалась
+                        Log.w(TAG, "Final transcription failed or empty, using live text")
+                        val liveText = _uiState.value.finalizedText
+                        if (liveText.isBlank()) {
+                            _errorMessage.value = "Нечего сохранять: текст пустой"
+                            return@launch
+                        }
+                        liveText
+                    }
+                } else {
+                    // Нет аудиофайла — используем live-текст
+                    Log.w(TAG, "Audio file not found or too small, using live text")
+                    val liveText = _uiState.value.finalizedText
+                    if (liveText.isBlank()) {
+                        _errorMessage.value = "Нечего сохранять: текст пустой"
+                        return@launch
+                    }
+                    liveText
+                }
+
+                if (textToSave.isBlank()) {
+                    _errorMessage.value = "Нечего сохранять: текст пустой"
+                    return@launch
+                }
+
+                val durationSeconds = lastDurationSeconds
+
                 val recording = Recording(
                     title = "Запись ${System.currentTimeMillis()}",
-                    transcription = textToSave,
+                    transcription = textToSave.trim(),
                     timestamp = System.currentTimeMillis(),
                     durationSeconds = durationSeconds
                 )
@@ -212,18 +276,20 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
             } catch (e: Exception) {
                 Log.e(TAG, "Error saving recording", e)
                 _errorMessage.value = "Ошибка сохранения: ${e.message}"
+                _uiState.value = _uiState.value.copy(isFinalizing = false)
             }
         }
     }
 
-    /**
-     * Обновление названия записи.
-     */
     fun updateRecordingTitle(id: Long, newTitle: String) {
         viewModelScope.launch {
             try {
-                val recordingsList = dao.getAllRecordings().firstOrNull()
-                val recording = recordingsList?.find { it.id == id }
+                val recordingsList = dao.getAllRecordings().stateIn(
+                    scope = viewModelScope,
+                    started = SharingStarted.Lazily,
+                    initialValue = emptyList()
+                ).value
+                val recording = recordingsList.find { it.id == id }
 
                 if (recording == null) {
                     _errorMessage.value = "Запись не найдена"
@@ -239,9 +305,6 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    /**
-     * Удаление записи по объекту.
-     */
     fun deleteRecording(recording: Recording) {
         viewModelScope.launch {
             try {
@@ -254,9 +317,6 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
-    /**
-     * Удаление записи по ID.
-     */
     fun deleteRecording(id: Long) {
         viewModelScope.launch {
             try {
@@ -278,15 +338,19 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         super.onCleared()
         transcriber.shutdown()
         audioCollectionJob?.cancel()
+        settingsJob?.cancel()
         Log.i(TAG, "ViewModel cleared")
     }
 }
 
-class RecordingViewModelFactory(private val application: Application) : ViewModelProvider.Factory {
+class RecordingViewModelFactory(
+    private val application: Application,
+    private val settingsViewModel: SettingsViewModel
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(RecordingViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return RecordingViewModel(application) as T
+            return RecordingViewModel(application, settingsViewModel) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
