@@ -6,7 +6,7 @@
 - Показывает список сохранённых записей (RecordingsListScreen)
 - Открывает детальную запись (RecordingDetailScreen)
 - Управляет настройками (SettingsScreen)
-- Управляет состоянием через RecordingViewModel
+- Управляет состоянием через RecordingViewModel и SettingsViewModel
 
 К ЧЕМУ ПОДКЛЮЧЕН:
 - WhisperTranscriber (инициализация модели, транскрибация чанков)
@@ -25,15 +25,34 @@
 - updateRecordingTitle(id, newTitle) — переименование записи
 - errorMessage: StateFlow<String?> — ошибки для UI
 
+КОНТРАКТЫ ЭКРАНОВ:
+- StreamingScreen(uiState, onStartClick, onStopClick, onSaveClick, onSettingsClick, onHistoryClick, onBackClick)
+- RecordingsListScreen(viewModel, onNavigateToRecording, onNavigateToSettings, onBack)
+- RecordingDetailScreen(recordingId, viewModel, onBack, onDelete)
+- SettingsScreen(currentModelSize, currentLanguage, ...)
+
+НАВИГАЦИЯ:
+- streaming → settings (onSettingsClick)
+- streaming → history (onHistoryClick)
+- history → detail/{recordingId} (onNavigateToRecording)
+- detail → history (onBack или onDelete с автоматическим popBackStack)
+- settings → streaming (onBackClick)
+- history → streaming (onBack)
+
 ОБРАБОТКА ТЕКСТА:
 - Во время live-записи применяется только TextProcessor.applyVoiceCommands()
 - После остановки применяется полный TextProcessor.process()
 - Это предотвращает повторное вычисление арифметики и дублирование результатов
 
+ЛОКАЛИЗАЦИЯ:
+- StreamingScreen полностью локализован на русский язык
+
 ЗАВИСИМОСТИ:
 - AndroidX Lifecycle
 - Jetpack Compose (Material3)
+- AndroidX Navigation Compose
 - Kotlin Coroutines / Flow
+- lifecycle-runtime-compose (collectAsStateWithLifecycle)
 - Room через data-блок
 - textprocessor-блок
 
@@ -44,6 +63,14 @@
 - Состояние экрана только через StateFlow
 
 ИСТОРИЯ ИЗМЕНЕНИЙ:
+08.08.2026 - StreamingScreen: добавлена кнопка истории
+  * Добавлен параметр onHistoryClick в сигнатуру
+  * Добавлена IconButton с Icons.Filled.List в TopAppBar
+  * Локализация всех текстов на русский
+08.08.2026 - MainActivity: подключены экраны истории
+  * Роут "history" теперь содержит RecordingsListScreen
+  * Добавлен роут "detail/{recordingId}" для RecordingDetailScreen
+  * При удалении записи на детальном экране — автоматический popBackStack
 08.08.2026 - RecordingViewModel расширен:
   * Добавлены allRecordings, getRecordingById, deleteRecording(id), updateRecordingTitle
   * Подключён TextProcessor (voice commands в live, полный pipeline при финализации)

@@ -1,6 +1,5 @@
 ﻿package com.example.lecturenotes
 
-import android.app.Application
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,17 +11,19 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
-import com.example.lecturenotes.ui.StreamingScreen
-import com.example.lecturenotes.ui.SettingsScreen
+import androidx.navigation.navArgument
+import com.example.lecturenotes.ui.RecordingDetailScreen
 import com.example.lecturenotes.ui.RecordingViewModel
-import com.example.lecturenotes.ui.RecordingViewModelFactory
-import com.example.lecturenotes.ui.SettingsViewModel
+import com.example.lecturenotes.ui.RecordingsListScreen
 import com.example.lecturenotes.ui.SettingsConstants
+import com.example.lecturenotes.ui.SettingsScreen
+import com.example.lecturenotes.ui.SettingsViewModel
+import com.example.lecturenotes.ui.StreamingScreen
 import com.example.lecturenotes.ui.theme.LectureNotesTheme
 
 class MainActivity : ComponentActivity() {
@@ -36,18 +37,8 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val navController = rememberNavController()
-
-                    // SettingsViewModel создаётся первым (не имеет зависимостей)
+                    val recordingViewModel: RecordingViewModel = viewModel()
                     val settingsViewModel: SettingsViewModel = viewModel()
-
-                    // RecordingViewModel создаётся через фабрику с инъекцией SettingsViewModel
-                    val application = LocalContext.current.applicationContext as Application
-                    val recordingViewModel: RecordingViewModel = viewModel(
-                        factory = RecordingViewModelFactory(
-                            application = application,
-                            settingsViewModel = settingsViewModel
-                        )
-                    )
 
                     NavHost(
                         navController = navController,
@@ -61,6 +52,7 @@ class MainActivity : ComponentActivity() {
                                 onStopClick = { recordingViewModel.stopRecording() },
                                 onSaveClick = { recordingViewModel.saveRecording() },
                                 onSettingsClick = { navController.navigate("settings") },
+                                onHistoryClick = { navController.navigate("history") },
                                 onBackClick = { finish() }
                             )
                         }
@@ -79,7 +71,31 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         composable("history") {
-                            Text("History Screen - TODO")
+                            RecordingsListScreen(
+                                viewModel = recordingViewModel,
+                                onNavigateToRecording = { recordingId ->
+                                    navController.navigate("detail/$recordingId")
+                                },
+                                onNavigateToSettings = { navController.navigate("settings") },
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+                        composable(
+                            route = "detail/{recordingId}",
+                            arguments = listOf(
+                                navArgument("recordingId") { type = NavType.LongType }
+                            )
+                        ) { backStackEntry ->
+                            val recordingId = backStackEntry.arguments?.getLong("recordingId") ?: return@composable
+                            RecordingDetailScreen(
+                                recordingId = recordingId,
+                                viewModel = recordingViewModel,
+                                onBack = { navController.popBackStack() },
+                                onDelete = { id ->
+                                    recordingViewModel.deleteRecording(id)
+                                    navController.popBackStack()
+                                }
+                            )
                         }
                     }
                 }

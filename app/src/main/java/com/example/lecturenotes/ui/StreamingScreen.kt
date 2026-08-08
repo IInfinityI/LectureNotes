@@ -8,12 +8,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.List
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +34,7 @@ fun StreamingScreen(
     onStopClick: () -> Unit,
     onSaveClick: () -> Unit,
     onSettingsClick: () -> Unit,
+    onHistoryClick: () -> Unit,
     onBackClick: () -> Unit
 ) {
     Scaffold(
@@ -38,8 +42,11 @@ fun StreamingScreen(
             TopAppBar(
                 title = { Text("Lecture Notes") },
                 actions = {
+                    IconButton(onClick = onHistoryClick) {
+                        Icon(Icons.Filled.List, contentDescription = "История записей")
+                    }
                     IconButton(onClick = onSettingsClick) {
-                        Icon(Icons.Outlined.Settings, contentDescription = "Settings")
+                        Icon(Icons.Outlined.Settings, contentDescription = "Настройки")
                     }
                 }
             )
@@ -75,16 +82,16 @@ fun StreamingScreen(
                     )
                     Text(
                         text = when {
-                            uiState.isFinalizing -> "Finalizing..."
-                            uiState.isRecording -> "Recording"
-                            else -> "Ready"
+                            uiState.isFinalizing -> "Финализация..."
+                            uiState.isRecording -> "Запись..."
+                            else -> "Готов"
                         },
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium
                     )
                 }
                 Text(
-                    text = "${uiState.wordCount} words",
+                    text = "${uiState.wordCount} слов",
                     fontSize = 12.sp,
                     color = Color.Gray
                 )
@@ -112,7 +119,7 @@ fun StreamingScreen(
                         ) {
                             Icon(
                                 Icons.Filled.Error,
-                                contentDescription = "Error",
+                                contentDescription = "Ошибка",
                                 tint = Color.Red,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -130,7 +137,7 @@ fun StreamingScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = "Press the microphone button to start recording",
+                                text = "Нажмите кнопку микрофона, чтобы начать запись",
                                 color = Color.Gray,
                                 fontSize = 16.sp
                             )
@@ -175,9 +182,9 @@ fun StreamingScreen(
                             containerColor = Color.Red
                         )
                     ) {
-                        Icon(Icons.Outlined.Stop, contentDescription = "Stop")
+                        Icon(Icons.Outlined.Stop, contentDescription = "Стоп")
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Stop")
+                        Text("Стоп")
                     }
                 } else {
                     Button(
@@ -186,9 +193,9 @@ fun StreamingScreen(
                             containerColor = MaterialTheme.colorScheme.primary
                         )
                     ) {
-                        Icon(Icons.Outlined.Mic, contentDescription = "Record")
+                        Icon(Icons.Outlined.Mic, contentDescription = "Запись")
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Record")
+                        Text("Запись")
                     }
                 }
 
@@ -199,9 +206,9 @@ fun StreamingScreen(
                         containerColor = MaterialTheme.colorScheme.secondary
                     )
                 ) {
-                    Icon(Icons.Filled.Save, contentDescription = "Save")
+                    Icon(Icons.Filled.Save, contentDescription = "Сохранить")
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Save")
+                    Text("Сохранить")
                 }
             }
         }
