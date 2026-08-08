@@ -4,6 +4,7 @@
 #include <vector>
 #include <fstream>
 #include <mutex>
+#include <atomic>
 #include "whisper.h"
 
 #define LOG_TAG "WhisperJNI"
@@ -14,6 +15,11 @@
 static whisper_context* ctx = nullptr;
 static std::string current_model_path = "";
 static std::mutex model_mutex;
+static std::atomic<bool> is_processing{false};
+
+// Оптимизация: переиспользуемые параметры для стриминга
+static whisper_full_params streaming_wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+static bool wparams_initialized = false;
 
 // Инициализация модели
 extern "C" JNIEXPORT jboolean JNICALL
@@ -57,6 +63,22 @@ Java_com_example_lecturenotes_transcription_WhisperTranscriber_initModel(
 
     current_model_path = model_path_str;
     LOGI("Model loaded successfully from: %s", model_path_str);
+    
+    // Инициализируем параметры стриминга один раз
+    if (!wparams_initialized) {
+        streaming_wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        streaming_wparams.print_progress = false;
+        streaming_wparams.print_special = false;
+        streaming_wparams.print_realtime = false;
+        streaming_wparams.print_timestamps = false;
+        streaming_wparams.translate = false;
+        streaming_wparams.n_threads = 4; // ARM64 имеет 4+ ядра
+        streaming_wparams.no_context = false;
+        streaming_wparams.single_segment = true;
+        streaming_wparams.no_timestamps = true;
+        wparams_initialized = true;
+    }
+    
     env->ReleaseStringUTFChars(modelPath, model_path_str);
     return JNI_TRUE;
 }
@@ -72,11 +94,12 @@ Java_com_example_lecturenotes_transcription_WhisperTranscriber_releaseModel(
         whisper_free(ctx);
         ctx = nullptr;
         current_model_path = "";
+        wparams_initialized = false;
         LOGI("Model released");
     }
 }
 
-// Транскрибация аудио-чанка
+// Транскрибация аудио-чанка (оптимизированная версия)
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeChunk(
         JNIEnv* env, jobject /* this */, jbyteArray audioData, jstring language) {
@@ -93,16 +116,15 @@ Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeChunk(
         return env->NewStringUTF("");
     }
 
-    const char* lang_str = env->GetStringUTFChars(language, nullptr);
-    if (lang_str == nullptr) {
-        return env->NewStringUTF("");
-    }
-
     jsize len = env->GetArrayLength(audioData);
 
     if (len < 32000) {
         LOGI("transcribeChunk: audio too short (%d bytes), skipping", len);
-        env->ReleaseStringUTFChars(language, lang_str);
+        return env->NewStringUTF("");
+    }
+
+    const char* lang_str = env->GetStringUTFChars(language, nullptr);
+    if (lang_str == nullptr) {
         return env->NewStringUTF("");
     }
 
@@ -123,24 +145,10 @@ Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeChunk(
 
     env->ReleaseByteArrayElements(audioData, bytes, JNI_ABORT);
 
-    whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    wparams.print_progress = false;
-    wparams.print_special = false;
-    wparams.print_realtime = false;
-    wparams.print_timestamps = false;
-    wparams.translate = false;
-    wparams.language = lang_str;
-    wparams.n_threads = 2;
-    
-    // ИСПРАВЛЕНО: Устанавливаем no_context в false, чтобы модель сохраняла контекст
-    // между чанками стриминга. Это предотвращает галлюцинации и повторы.
-    wparams.no_context = false;
-    
-    // Дополнительные оптимизации для стриминга
-    wparams.single_segment = true;
-    wparams.no_timestamps = true;
+    // Используем предсозданные параметры, только обновляем язык
+    streaming_wparams.language = lang_str;
 
-    if (whisper_full(ctx, wparams, pcmf32.data(), static_cast<int>(pcmf32.size())) != 0) {
+    if (whisper_full(ctx, streaming_wparams, pcmf32.data(), static_cast<int>(pcmf32.size())) != 0) {
         LOGE("whisper_full failed for chunk");
         env->ReleaseStringUTFChars(language, lang_str);
         return env->NewStringUTF("");
@@ -148,6 +156,8 @@ Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeChunk(
 
     int n_segments = whisper_full_n_segments(ctx);
     std::string result = "";
+    result.reserve(128); // Оптимизация: резервируем память
+    
     for (int i = 0; i < n_segments; ++i) {
         const char* text = whisper_full_get_segment_text(ctx, i);
         if (text != nullptr) {
@@ -213,6 +223,7 @@ Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeAudio(
         pcmf32[i] = pcm16[i] / 32768.0f;
     }
 
+    // Для полной транскрибации используем другие параметры
     whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
     wparams.print_progress = false;
     wparams.print_special = false;
@@ -232,6 +243,8 @@ Java_com_example_lecturenotes_transcription_WhisperTranscriber_transcribeAudio(
 
     int n_segments = whisper_full_n_segments(ctx);
     std::string result = "";
+    result.reserve(1024); // Для полного файла резервируем больше
+    
     for (int i = 0; i < n_segments; ++i) {
         const char* text = whisper_full_get_segment_text(ctx, i);
         if (text != nullptr) {

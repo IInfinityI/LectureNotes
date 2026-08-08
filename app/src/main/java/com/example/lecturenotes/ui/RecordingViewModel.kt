@@ -21,7 +21,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-class RecordingViewModel(application: Application) : AndroidViewModel(application) {
+class RecordingViewModel(
+    application: Application,
+    private val settingsViewModel: SettingsViewModel
+) : AndroidViewModel(application) {
 
     companion object {
         private const val TAG = "RecordingViewModel"
@@ -47,16 +50,41 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
     private var audioCollectionJob: Job? = null
+    private var settingsJob: Job? = null
 
     init {
-        // Инициализация модели Whisper при создании ViewModel
+        // Инициализация модели Whisper с настройками по умолчанию
         viewModelScope.launch {
-            val success = transcriber.initialize()
+            val modelSize = settingsViewModel.modelSize.value
+            val success = initializeModelWithSettings(modelSize)
             if (!success) {
                 _uiState.value = _uiState.value.copy(error = "Не удалось загрузить модель Whisper")
                 Log.e(TAG, "Failed to initialize Whisper model")
             }
         }
+
+        // Подписка на изменения настроек
+        settingsJob = viewModelScope.launch {
+            settingsViewModel.settingsChanged.collect { timestamp ->
+                // Если запись не идёт — переинициализируем модель
+                if (!_uiState.value.isRecording) {
+                    val modelSize = settingsViewModel.modelSize.value
+                    Log.i(TAG, "Settings changed, reinitializing model: $modelSize")
+                    initializeModelWithSettings(modelSize)
+                } else {
+                    Log.w(TAG, "Settings changed but recording is active - changes will apply after stop")
+                }
+            }
+        }
+    }
+
+    /**
+     * Инициализация модели с учётом настроек.
+     */
+    private suspend fun initializeModelWithSettings(modelSize: String): Boolean {
+        val modelName = "ggml-${modelSize}.bin"
+        Log.i(TAG, "Initializing model: $modelName")
+        return transcriber.initialize(modelName)
     }
 
     /**
@@ -75,10 +103,13 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         }
         context.startForegroundService(intent)
 
+        // Читаем текущие настройки
+        val currentLanguage = settingsViewModel.language.value
+
         // Подписываемся на аудио-чанки из Repository (новый способ)
         audioCollectionJob = viewModelScope.launch {
             AudioChunkRepository.audioChunks.collect { chunk ->
-                val text = transcriber.processChunk(chunk)
+                val text = transcriber.processChunk(chunk, currentLanguage)
                 if (text.isNotBlank()) {
                     val currentLive = _uiState.value.liveText
                     val newLive = if (currentLive.isEmpty()) text.trim() else "$currentLive $text".trim()
@@ -172,15 +203,19 @@ class RecordingViewModel(application: Application) : AndroidViewModel(applicatio
         super.onCleared()
         transcriber.shutdown()
         audioCollectionJob?.cancel()
+        settingsJob?.cancel()
         Log.i(TAG, "ViewModel cleared")
     }
 }
 
-class RecordingViewModelFactory(private val application: Application) : ViewModelProvider.Factory {
+class RecordingViewModelFactory(
+    private val application: Application,
+    private val settingsViewModel: SettingsViewModel
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(RecordingViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return RecordingViewModel(application) as T
+            return RecordingViewModel(application, settingsViewModel) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

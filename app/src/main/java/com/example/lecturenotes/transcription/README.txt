@@ -1,27 +1,18 @@
-=== БЛОК: Transcription (Распознавание речи) ===
-
-ЧТО ДЕЛАЕТ:
-- Загружает модель Whisper.cpp один раз при инициализации
-- Принимает аудио-чанки (PCM 16-bit, 16kHz, mono)
-- Возвращает распознанный текст
-
-К ЧЕМУ ПОДКЛЮЧЕН:
-- native-lib.cpp (JNI-обертка над Whisper.cpp)
-- MainActivity.kt (вызывает processChunk())
-- RecordingService.kt (отдает аудио-чанки через Flow)
-
 КОНТРАКТЫ:
-- initialize(): Boolean — загрузка модели
+- initialize(): Boolean — загрузка модели (вызывается один раз)
 - shutdown() — освобождение памяти
-- processChunk(audioData: ByteArray, language: String): String
-- processFile(audioPath: String, language: String): String
+- processChunk(audioData: ByteArray, language: String): String — синхронная транскрибация чанка
+- processFile(audioPath: String, language: String): String — транскрибация полного файла
 - isReady(): Boolean
 
-ЗАВИСИМОСТИ:
-- whisper.cpp (C++ библиотека)
-- Android Context (для доступа к файлам)
+ОПТИМИЗАЦИИ (whisper_jni_bridge.cpp):
+- Модель загружается один раз (проверка по пути файла)
+- Параметры стриминга создаются при initModel, не на каждый чанк
+- n_threads = 4 для ARM64
+- Резервирование памяти для результата
 
-ПРАВИЛА:
-- Модель грузится ОДИН раз
-- Нельзя вызывать processChunk() до initialize()
-- После shutdown() нужно снова вызвать initialize()
+ИСТОРИЯ ИЗМЕНЕНИЙ:
+08.08.2026 - Оптимизация производительности стриминга:
+  * Переход на переиспользуемые streaming_wparams
+  * Увеличение n_threads до 4
+  * Добавлен result.reserve() для уменьшения аллокаций

@@ -1,28 +1,15 @@
-=== БЛОК: UI (Presentation) ===
-
-ЧТО ДЕЛАЕТ:
-- Отображает экран записи лекции
-- Управляет состоянием UI (блокировка/разблокировка кнопок)
-- Показывает распознанный текст в реальном времени
-- Сохраняет записи в БД через ViewModel
-
-К ЧЕМУ ПОДКЛЮЧЕН:
-- WhisperTranscriber (инициализация модели, транскрибация)
-- RecordingService (получение аудио-чанков через Flow)
-- RecordingViewModel (сохранение записей в БД)
-
 КОНТРАКТЫ:
-- btnStart.setOnClickListener → startRecordingViaService()
-- btnStop.setOnClickListener → stopRecordingViaService()
-- tvResult.text → отображение распознанного текста
+- RecordingViewModel: управление записью, транскрибацией и сохранением
+- SettingsViewModel: хранение настроек (модель, язык) через DataStore
+- StreamingScreen: UI записи в реальном времени
+- SettingsScreen: UI настроек
 
 ЗАВИСИМОСТИ:
-- AndroidX AppCompat
-- Kotlin Coroutines (lifecycleScope)
-- Android ViewBinding
+- RecordingViewModel зависит от SettingsViewModel (инъекция через фабрику)
+- MainActivity создаёт SettingsViewModel первым, затем передаёт в RecordingViewModelFactory
 
-ПРАВИЛА:
-- UI не содержит бизнес-логики (никаких прямых запросов к БД)
-- Все тяжелые операции (транскрибация) в корутинах
-- lifecycleScope автоматически отменяет корутины при уничтожении Activity
-- Модель Whisper инициализируется в onCreate, освобождается в onDestroy
+ИСТОРИЯ ИЗМЕНЕНИЙ:
+08.08.2026 - Интеграция SettingsViewModel в RecordingViewModel:
+  * RecordingViewModel теперь получает SettingsViewModel через конструктор
+  * MainActivity использует RecordingViewModelFactory для создания RecordingViewModel
+  * Настройки модели и языка применяются динамически

@@ -1,5 +1,6 @@
 ﻿package com.example.lecturenotes
 
+import android.app.Application
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -11,12 +12,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.lecturenotes.ui.StreamingScreen
 import com.example.lecturenotes.ui.SettingsScreen
 import com.example.lecturenotes.ui.RecordingViewModel
+import com.example.lecturenotes.ui.RecordingViewModelFactory
 import com.example.lecturenotes.ui.SettingsViewModel
 import com.example.lecturenotes.ui.SettingsConstants
 import com.example.lecturenotes.ui.theme.LectureNotesTheme
@@ -32,8 +36,18 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     val navController = rememberNavController()
-                    val recordingViewModel = androidx.lifecycle.viewmodel.compose.viewModel<RecordingViewModel>()
-                    val settingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel<SettingsViewModel>()
+
+                    // SettingsViewModel создаётся первым (не имеет зависимостей)
+                    val settingsViewModel: SettingsViewModel = viewModel()
+
+                    // RecordingViewModel создаётся через фабрику с инъекцией SettingsViewModel
+                    val application = LocalContext.current.applicationContext as Application
+                    val recordingViewModel: RecordingViewModel = viewModel(
+                        factory = RecordingViewModelFactory(
+                            application = application,
+                            settingsViewModel = settingsViewModel
+                        )
+                    )
 
                     NavHost(
                         navController = navController,
@@ -45,9 +59,7 @@ class MainActivity : ComponentActivity() {
                                 uiState = uiState,
                                 onStartClick = { recordingViewModel.startRecording() },
                                 onStopClick = { recordingViewModel.stopRecording() },
-                                onSaveClick = {
-                                    recordingViewModel.saveRecording()
-                                },
+                                onSaveClick = { recordingViewModel.saveRecording() },
                                 onSettingsClick = { navController.navigate("settings") },
                                 onBackClick = { finish() }
                             )
