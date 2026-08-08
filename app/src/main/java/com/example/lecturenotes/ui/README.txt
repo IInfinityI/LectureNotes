@@ -6,46 +6,46 @@
 - Показывает список сохранённых записей (RecordingsListScreen)
 - Открывает детальную запись (RecordingDetailScreen)
 - Управляет настройками (SettingsScreen)
-- Управляет состоянием через RecordingViewModel и SettingsViewModel
+- Управляет состоянием через RecordingViewModel
 
 К ЧЕМУ ПОДКЛЮЧЕН:
 - WhisperTranscriber (инициализация модели, транскрибация чанков)
 - RecordingService (аудио-чанки через Flow из AudioChunkRepository)
-- TextProcessor (постобработка текста при финализации)
+- TextProcessor (постобработка текста: голосовые команды в live, полный pipeline при финализации)
 - Room DAO (история записей)
 
 КОНТРАКТЫ RecordingViewModel:
 - uiState: StateFlow<TranscriptionState> — состояние экрана записи
-- recordings / allRecordings: StateFlow<List<Recording>> — список записей
-- getRecordingById(id): Flow<Recording?> — запись для детального экрана
+- recordings: StateFlow<List<Recording>> — список записей
+- allRecordings: StateFlow<List<Recording>> — алиас для RecordingsListScreen
+- getRecordingById(id): Flow<Recording?> — запись для RecordingDetailScreen
 - startRecording() / stopRecording() / saveRecording()
-- deleteRecording(recording) / deleteRecording(id)
-- updateRecordingTitle(id, newTitle)
-- errorMessage: StateFlow<String?>
+- deleteRecording(recording) — удаление по объекту
+- deleteRecording(id) — удаление по ID
+- updateRecordingTitle(id, newTitle) — переименование записи
+- errorMessage: StateFlow<String?> — ошибки для UI
 
-КОНТРАКТЫ ЭКРАНОВ:
-- RecordingsListScreen(viewModel, onNavigateToRecording, onNavigateToSettings, onBack)
-- StreamingScreen(uiState, onStartClick, onStopClick, onSaveClick, onSettingsClick, onBackClick)
-- SettingsScreen(currentModelSize, currentLanguage, ...)
+ОБРАБОТКА ТЕКСТА:
+- Во время live-записи применяется только TextProcessor.applyVoiceCommands()
+- После остановки применяется полный TextProcessor.process()
+- Это предотвращает повторное вычисление арифметики и дублирование результатов
 
 ЗАВИСИМОСТИ:
+- AndroidX Lifecycle
 - Jetpack Compose (Material3)
-- AndroidX Navigation Compose
 - Kotlin Coroutines / Flow
-- lifecycle-runtime-compose (collectAsStateWithLifecycle)
+- Room через data-блок
+- textprocessor-блок
 
 ПРАВИЛА:
-- UI не содержит бизнес-логики
+- UI не содержит бизнес-логику
 - Все операции с БД и транскрибацией только через ViewModel
+- Модель Whisper не управляется напрямую из Composable
 - Состояние экрана только через StateFlow
-- Никаких глобальных синглтонов для передачи данных
 
 ИСТОРИЯ ИЗМЕНЕНИЙ:
-08.08.2026 - RecordingsListScreen переписан на Material3:
-  * Удалены несуществующие Material2 API (Modifier.swipeToDismiss, rememberDismissState)
-  * Добавлен SwipeToDismissBox + rememberSwipeToDismissBoxState
-  * Добавлено пустое состояние списка
-  * Исправлены отсутствующие импорты (background, Icons.Delete)
 08.08.2026 - RecordingViewModel расширен:
   * Добавлены allRecordings, getRecordingById, deleteRecording(id), updateRecordingTitle
-  * Подключён TextProcessor, добавлен расчёт durationSeconds
+  * Подключён TextProcessor (voice commands в live, полный pipeline при финализации)
+  * Добавлен расчёт durationSeconds
+  * Исправлен regex для wordCount: "s+" → "\\s+"
