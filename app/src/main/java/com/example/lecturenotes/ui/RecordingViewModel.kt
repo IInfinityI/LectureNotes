@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -34,6 +35,7 @@ class RecordingViewModel(
     companion object {
         private const val TAG = "RecordingViewModel"
         private const val RECORDING_FILE = "recording_live.pcm"
+        private const val STREAMING_MODEL = "ggml-tiny.bin"
     }
 
     private val dao = AppDatabase.getDatabase(application).recordingDao()
@@ -66,25 +68,31 @@ class RecordingViewModel(
     private var lastDurationSeconds: Int = 0
 
     init {
-        // Инициализация streaming-модели (tiny)
+        // Инициализация streaming-модели (tiny) с индикатором загрузки
         viewModelScope.launch {
-            val success = transcriber.initialize("ggml-tiny.bin")
+            _uiState.value = _uiState.value.copy(isLoadingModel = true)
+            val success = transcriber.initialize(STREAMING_MODEL)
+            _uiState.value = _uiState.value.copy(isLoadingModel = false)
+
             if (!success) {
                 _uiState.value = _uiState.value.copy(
-                    error = "Не удалось загрузить модель Whisper"
+                    error = "Не удалось загрузить модель Whisper. Проверьте наличие ggml-tiny.bin в assets."
                 )
                 Log.e(TAG, "Failed to initialize Whisper model")
+            } else {
+                Log.i(TAG, "Streaming model initialized")
             }
         }
 
         // Подписка на изменения настроек
         settingsJob = viewModelScope.launch {
             settingsViewModel.settingsChanged.collect {
-                // Если запись не идёт — переинициализируем модель
+                // Если запись не идёт — переинициализируем модель с индикатором
                 if (!_uiState.value.isRecording) {
-                    val modelSize = settingsViewModel.modelSize.value
-                    Log.i(TAG, "Settings changed, reinitializing model: $modelSize")
-                    transcriber.initialize("ggml-tiny.bin")
+                    Log.i(TAG, "Settings changed, reinitializing streaming model")
+                    _uiState.value = _uiState.value.copy(isLoadingModel = true)
+                    transcriber.initialize(STREAMING_MODEL)
+                    _uiState.value = _uiState.value.copy(isLoadingModel = false)
                 } else {
                     Log.w(TAG, "Settings changed but recording is active - changes will apply after stop")
                 }
@@ -111,9 +119,18 @@ class RecordingViewModel(
 
     /**
      * Запуск записи через RecordingService + подписка на аудио-чанки.
+     * Блокируется, если модель ещё грузится.
      */
     fun startRecording() {
         if (_uiState.value.isRecording) return
+        if (_uiState.value.isLoadingModel) {
+            _errorMessage.value = "Модель ещё загружается, подождите"
+            return
+        }
+        if (!transcriber.isReady()) {
+            _errorMessage.value = "Модель Whisper не готова. Перезапустите приложение."
+            return
+        }
 
         _uiState.value = TranscriptionState(isRecording = true)
         recordingStartedAt = System.currentTimeMillis()
@@ -227,7 +244,7 @@ class RecordingViewModel(
                     _uiState.value = _uiState.value.copy(isFinalizing = true)
 
                     val finalTranscription = transcriber.processFile(audioPath, currentLanguage)
-                    
+
                     _uiState.value = _uiState.value.copy(isFinalizing = false)
 
                     if (finalTranscription.isNotBlank()) {
@@ -284,12 +301,8 @@ class RecordingViewModel(
     fun updateRecordingTitle(id: Long, newTitle: String) {
         viewModelScope.launch {
             try {
-                val recordingsList = dao.getAllRecordings().stateIn(
-                    scope = viewModelScope,
-                    started = SharingStarted.Lazily,
-                    initialValue = emptyList()
-                ).value
-                val recording = recordingsList.find { it.id == id }
+                val recordingsList = dao.getAllRecordings().firstOrNull()
+                val recording = recordingsList?.find { it.id == id }
 
                 if (recording == null) {
                     _errorMessage.value = "Запись не найдена"

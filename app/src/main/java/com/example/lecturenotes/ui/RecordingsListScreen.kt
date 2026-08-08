@@ -10,12 +10,12 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.lecturenotes.data.Recording
 import java.text.SimpleDateFormat
 import java.util.*
@@ -28,7 +28,7 @@ fun RecordingsListScreen(
     onNavigateToSettings: () -> Unit,
     onBack: () -> Unit
 ) {
-    val recordings by viewModel.allRecordings.collectAsStateWithLifecycle()
+    val recordings by viewModel.allRecordings.collectAsState()
 
     Scaffold(
         topBar = {
@@ -70,8 +70,8 @@ fun RecordingsListScreen(
             ) {
                 items(
                     items = recordings,
-                    key = { recording -> recording.id }
-                ) { recording ->
+                    key = { recording: Recording -> recording.id }
+                ) { recording: Recording ->
                     RecordingItem(
                         recording = recording,
                         onClick = { onNavigateToRecording(recording.id) },

@@ -8,20 +8,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.List
-import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.Mic
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.lecturenotes.transcription.TranscriptionState
@@ -43,7 +42,7 @@ fun StreamingScreen(
                 title = { Text("Lecture Notes") },
                 actions = {
                     IconButton(onClick = onHistoryClick) {
-                        Icon(Icons.Filled.List, contentDescription = "История записей")
+                        Icon(Icons.Filled.History, contentDescription = "История записей")
                     }
                     IconButton(onClick = onSettingsClick) {
                         Icon(Icons.Outlined.Settings, contentDescription = "Настройки")
@@ -58,7 +57,32 @@ fun StreamingScreen(
                 .padding(paddingValues)
                 .padding(16.dp)
         ) {
-            // Status indicator
+            // Индикатор загрузки модели
+            if (uiState.isLoadingModel) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = "Загрузка модели Whisper...",
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            // Индикатор статуса
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -75,16 +99,20 @@ fun StreamingScreen(
                             .size(12.dp)
                             .clip(CircleShape)
                             .background(
-                                if (uiState.isRecording) Color.Red
-                                else if (uiState.isFinalizing) Color.Yellow
-                                else Color.Gray
+                                when {
+                                    uiState.isLoadingModel -> Color.Blue
+                                    uiState.isRecording -> Color.Red
+                                    uiState.isFinalizing -> Color.Yellow
+                                    else -> Color.Gray
+                                }
                             )
                     )
                     Text(
                         text = when {
+                            uiState.isLoadingModel -> "Загрузка модели..."
                             uiState.isFinalizing -> "Финализация..."
-                            uiState.isRecording -> "Запись..."
-                            else -> "Готов"
+                            uiState.isRecording -> "Запись идёт"
+                            else -> "Готово"
                         },
                         fontSize = 14.sp,
                         fontWeight = FontWeight.Medium
@@ -97,7 +125,7 @@ fun StreamingScreen(
                 )
             }
 
-            // Live transcription area
+            // Область live-транскрибации
             Card(
                 modifier = Modifier
                     .weight(1f)
@@ -136,11 +164,23 @@ fun StreamingScreen(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "Нажмите кнопку микрофона, чтобы начать запись",
-                                color = Color.Gray,
-                                fontSize = 16.sp
-                            )
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Mic,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(48.dp),
+                                    tint = Color.Gray
+                                )
+                                Text(
+                                    text = "Нажмите кнопку записи, чтобы начать транскрибацию лекции",
+                                    color = Color.Gray,
+                                    fontSize = 16.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
                         }
                     } else {
                         Column(
@@ -169,7 +209,7 @@ fun StreamingScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Control buttons
+            // Кнопки управления
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceEvenly
@@ -189,6 +229,7 @@ fun StreamingScreen(
                 } else {
                     Button(
                         onClick = onStartClick,
+                        enabled = !uiState.isLoadingModel,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.primary
                         )
@@ -201,7 +242,10 @@ fun StreamingScreen(
 
                 Button(
                     onClick = onSaveClick,
-                    enabled = uiState.finalizedText.isNotEmpty() || uiState.liveText.isNotEmpty(),
+                    enabled = !uiState.isRecording &&
+                            !uiState.isFinalizing &&
+                            !uiState.isLoadingModel &&
+                            (uiState.finalizedText.isNotEmpty() || uiState.liveText.isNotEmpty()),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.secondary
                     )

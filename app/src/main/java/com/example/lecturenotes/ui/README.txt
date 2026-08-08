@@ -70,3 +70,8 @@
   * Добавлен fallback на live-текст если финальная транскрибация не удалась
   * Защита от race condition: нельзя сохранить во время записи
   * Подписка на settingsChanged для реактивного переключения модели
+08.08.2026 - Приоритет 4: индикатор загрузки модели + багфикс
+  * TranscriptionState: добавлено поле isLoadingModel
+  * RecordingViewModel: выставляет isLoadingModel при init и при смене настроек
+  * startRecording() заблокирован пока модель грузится или не готова
+  * ИСПРАВЛЕНО: updateRecordingTitle() не работал из-за stateIn(...).value → заменено на firstOrNull()
