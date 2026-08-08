@@ -15,15 +15,15 @@ import com.example.lecturenotes.textprocessor.DefaultTextProcessor
 import com.example.lecturenotes.textprocessor.TextProcessor
 import com.example.lecturenotes.transcription.TranscriptionState
 import com.example.lecturenotes.transcription.WhisperTranscriber
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
 
 class RecordingViewModel(
@@ -61,14 +61,14 @@ class RecordingViewModel(
 
     private var audioCollectionJob: Job? = null
     private var settingsJob: Job? = null
+    private var errorSubscriptionJob: Job? = null
     private var recordingStartedAt: Long = 0L
     private var lastDurationSeconds: Int = 0
 
     init {
         // Инициализация streaming-модели (tiny)
         viewModelScope.launch {
-            val modelSize = settingsViewModel.modelSize.value
-            val success = initializeStreamingModel(modelSize)
+            val success = transcriber.initialize("ggml-tiny.bin")
             if (!success) {
                 _uiState.value = _uiState.value.copy(
                     error = "Не удалось загрузить модель Whisper"
@@ -79,31 +79,31 @@ class RecordingViewModel(
 
         // Подписка на изменения настроек
         settingsJob = viewModelScope.launch {
-            settingsViewModel.settingsChanged.collect { timestamp ->
+            settingsViewModel.settingsChanged.collect {
                 // Если запись не идёт — переинициализируем модель
                 if (!_uiState.value.isRecording) {
                     val modelSize = settingsViewModel.modelSize.value
                     Log.i(TAG, "Settings changed, reinitializing model: $modelSize")
-                    initializeStreamingModel(modelSize)
+                    transcriber.initialize("ggml-tiny.bin")
                 } else {
                     Log.w(TAG, "Settings changed but recording is active - changes will apply after stop")
                 }
             }
         }
+
+        // Подписка на ошибки от RecordingService
+        errorSubscriptionJob = viewModelScope.launch {
+            AudioChunkRepository.errors.collect { error ->
+                if (error != null) {
+                    _uiState.value = _uiState.value.copy(error = error)
+                    _errorMessage.value = error
+                    Log.e(TAG, "Service error: $error")
+                }
+            }
+        }
     }
 
-    /**
-     * Инициализация streaming-модели (tiny) с учётом настроек.
-     */
-    private suspend fun initializeStreamingModel(modelSize: String): Boolean {
-        // Для стриминга ВСЕГДА используем tiny, независимо от настроек
-        // Настройки влияют только на финальную модель
-        val streamingModelName = "ggml-tiny.bin"
-        Log.i(TAG, "Initializing streaming model: $streamingModelName")
-        return transcriber.initialize(streamingModelName)
-    }
-
-    fun getRecordingById(id: Long): kotlinx.coroutines.flow.Flow<Recording?> {
+    fun getRecordingById(id: Long): Flow<Recording?> {
         return recordings.map { list ->
             list.find { it.id == id }
         }
@@ -332,6 +332,7 @@ class RecordingViewModel(
     fun clearError() {
         _errorMessage.value = null
         _uiState.value = _uiState.value.copy(error = null)
+        AudioChunkRepository.clearError()
     }
 
     override fun onCleared() {
@@ -339,6 +340,7 @@ class RecordingViewModel(
         transcriber.shutdown()
         audioCollectionJob?.cancel()
         settingsJob?.cancel()
+        errorSubscriptionJob?.cancel()
         Log.i(TAG, "ViewModel cleared")
     }
 }

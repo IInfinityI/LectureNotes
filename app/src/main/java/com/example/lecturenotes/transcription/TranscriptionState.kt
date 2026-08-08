@@ -7,6 +7,7 @@ package com.example.lecturenotes.transcription
 data class TranscriptionState(
     val isRecording: Boolean = false,
     val isFinalizing: Boolean = false,
+    val isLoadingModel: Boolean = false,
     val liveText: String = "",
     val finalizedText: String = "",
     val wordCount: Int = 0,

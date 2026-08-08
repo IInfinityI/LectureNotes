@@ -1,8 +1,8 @@
 package com.example.lecturenotes
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.media.AudioFormat
@@ -15,227 +15,229 @@ import androidx.core.app.NotificationCompat
 import com.example.lecturenotes.data.AudioChunkRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
 import java.io.File
-import java.io.FileOutputStream // <-- Добавлен импорт
-import java.util.concurrent.atomic.AtomicBoolean
+import java.io.FileOutputStream
 
+/**
+ * Foreground Service для записи аудио в фоне.
+ * Публикует аудио-чанки через AudioChunkRepository (SharedFlow).
+ * Сохраняет полное аудио в файл для финальной транскрибации.
+ */
 class RecordingService : Service() {
-    companion object {
-        const val CHANNEL_ID = "RecordingChannel"
-        const val ACTION_START = "ACTION_START"
-        const val ACTION_STOP = "ACTION_STOP"
-        const val ACTION_PAUSE = "ACTION_PAUSE"
-        const val ACTION_RESUME = "ACTION_RESUME"
-        const val RECORDING_FILE = "recording_live.pcm"
 
-        // Константы для 2-секундных чанков
+    companion object {
+        private const val TAG = "RecordingService"
+        private const val CHANNEL_ID = "recording_channel"
+        private const val NOTIFICATION_ID = 1
+
+        const val ACTION_START = "com.example.lecturenotes.START_RECORDING"
+        const val ACTION_STOP = "com.example.lecturenotes.STOP_RECORDING"
+
+        // Аудио-параметры
         private const val SAMPLE_RATE = 16000
+        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
+        private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+        
+        // Размер чанка: 2 секунды аудио
         private const val CHUNK_DURATION_SECONDS = 2
-        private const val CHUNK_SIZE_BYTES = SAMPLE_RATE * CHUNK_DURATION_SECONDS * 2 // 16-bit = 2 байта
+        private const val CHUNK_SIZE_SAMPLES = SAMPLE_RATE * CHUNK_DURATION_SECONDS
+        private const val CHUNK_SIZE_BYTES = CHUNK_SIZE_SAMPLES * 2 // 16-bit = 2 bytes per sample
+
+        private const val RECORDING_FILE = "recording_live.pcm"
     }
 
-    private val isRecording = AtomicBoolean(false)
-    private val isPaused = AtomicBoolean(false)
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var recordingJob: Job? = null
     private var audioRecord: AudioRecord? = null
-    private var recordingThread: Thread? = null
+    private var isRecording = false
+    
+    private val _serviceState = MutableStateFlow<ServiceState>(ServiceState.IDLE)
+    val serviceState: StateFlow<ServiceState> = _serviceState.asStateFlow()
 
-    // Буфер для накопления 2-секундных чанков
-    private val chunkBuffer = ByteArrayOutputStream()
+    // Файл для сохранения полного аудио
+    private var outputFile: File? = null
+    private var fileOutputStream: FileOutputStream? = null
+
+    enum class ServiceState {
+        IDLE,
+        RECORDING,
+        ERROR_MICROPHONE,
+        ERROR_PERMISSION,
+        ERROR_STORAGE
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        Log.i("RecordingService", "Service created")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                startForegroundService()
                 startRecording()
+                startForeground(NOTIFICATION_ID, createNotification("Запись лекции..."))
             }
             ACTION_STOP -> {
                 stopRecording()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
-            ACTION_PAUSE -> {
-                pauseRecording()
-            }
-            ACTION_RESUME -> {
-                resumeRecording()
-            }
         }
-        return START_STICKY
-    }
-
-    private fun startForegroundService() {
-        val notificationIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, notificationIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Запись лекции")
-            .setContentText("Идёт запись и распознавание...")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentIntent(pendingIntent)
-            .setOngoing(true)
-            .build()
-
-        startForeground(1, notification)
-        Log.i("RecordingService", "Foreground service started")
+        return START_NOT_STICKY
     }
 
     private fun startRecording() {
-        if (isRecording.getAndSet(true)) {
-            Log.w("RecordingService", "Already recording")
+        if (isRecording) {
+            Log.w(TAG, "Already recording")
             return
         }
 
-        isPaused.set(false)
+        // Проверяем разрешение на запись аудио
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != 
+                android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                Log.e(TAG, "RECORD_AUDIO permission not granted")
+                _serviceState.value = ServiceState.ERROR_PERMISSION
+                AudioChunkRepository.emitError("Нет разрешения на использование микрофона")
+                stopSelf()
+                return
+            }
+        }
 
-        val channelConfig = AudioFormat.CHANNEL_IN_MONO
-        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-        val bufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, channelConfig, audioFormat)
-
-        if (bufferSize == AudioRecord.ERROR || bufferSize == AudioRecord.ERROR_BAD_VALUE) {
-            Log.e("RecordingService", "Invalid buffer size: $bufferSize")
-            isRecording.set(false)
+        // Инициализация AudioRecord
+        val minBufferSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_CONFIG, AUDIO_FORMAT)
+        if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
+            Log.e(TAG, "Invalid buffer size: $minBufferSize")
+            _serviceState.value = ServiceState.ERROR_MICROPHONE
+            AudioChunkRepository.emitError("Не удалось инициализировать аудио-буфер")
+            stopSelf()
             return
         }
 
         try {
             audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE,
-                channelConfig,
-                audioFormat,
-                bufferSize
+                CHANNEL_CONFIG,
+                AUDIO_FORMAT,
+                minBufferSize * 2 // Увеличенный буфер для стабильности
             )
+        } catch (e: SecurityException) {
+            Log.e(TAG, "SecurityException creating AudioRecord", e)
+            _serviceState.value = ServiceState.ERROR_PERMISSION
+            AudioChunkRepository.emitError("Нет разрешения на использование микрофона")
+            stopSelf()
+            return
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create AudioRecord", e)
+            _serviceState.value = ServiceState.ERROR_MICROPHONE
+            AudioChunkRepository.emitError("Не удалось получить доступ к микрофону: ${e.message}")
+            stopSelf()
+            return
+        }
 
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e("RecordingService", "AudioRecord initialization failed")
-                audioRecord?.release()
-                audioRecord = null
-                isRecording.set(false)
-                return
-            }
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            Log.e(TAG, "AudioRecord not initialized")
+            _serviceState.value = ServiceState.ERROR_MICROPHONE
+            AudioChunkRepository.emitError("Микрофон занят другим приложением")
+            audioRecord?.release()
+            audioRecord = null
+            stopSelf()
+            return
+        }
 
-            val outputFile = File(cacheDir, RECORDING_FILE) // <-- Теперь File доступен
-            if (outputFile.exists()) outputFile.delete()
+        // Создаём файл для сохранения полного аудио
+        try {
+            outputFile = File(cacheDir, RECORDING_FILE)
+            fileOutputStream = FileOutputStream(outputFile, false) // Перезаписываем существующий
+            Log.i(TAG, "Recording to: ${outputFile?.absolutePath}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create output file", e)
+            _serviceState.value = ServiceState.ERROR_STORAGE
+            AudioChunkRepository.emitError("Не удалось создать файл для записи: ${e.message}")
+            audioRecord?.release()
+            audioRecord = null
+            stopSelf()
+            return
+        }
 
-            audioRecord?.startRecording()
-            Log.i("RecordingService", "Recording started")
+        audioRecord?.startRecording()
+        isRecording = true
+        _serviceState.value = ServiceState.RECORDING
 
-            recordingThread = Thread {
-                FileOutputStream(outputFile).use { fos -> // <-- Теперь FileOutputStream доступен
-                    val buffer = ByteArray(bufferSize)
+        Log.i(TAG, "Recording started")
 
-                    while (isRecording.get()) {
-                        if (isPaused.get()) {
-                            // При паузе просто ждём, не читаем данные
-                            Thread.sleep(100)
-                            continue
-                        }
-
-                        val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-
-                        if (read > 0) {
-                            // Записываем в файл (для отладки)
-                            fos.write(buffer, 0, read)
-
-                            // Накапливаем в буфер
-                            synchronized(chunkBuffer) {
-                                chunkBuffer.write(buffer, 0, read)
-
-                                // Когда буфер достигает 2 секунд - отправляем чанк
-                                while (chunkBuffer.size() >= CHUNK_SIZE_BYTES) {
-                                    val chunkData = chunkBuffer.toByteArray()
-                                    val chunk = if (chunkData.size > CHUNK_SIZE_BYTES) {
-                                        // Если буфер больше 2 секунд - берём первые 2 секунды
-                                        val exactChunk = ByteArray(CHUNK_SIZE_BYTES)
-                                        System.arraycopy(chunkData, 0, exactChunk, 0, CHUNK_SIZE_BYTES)
-
-                                        // Очищаем буфер и сохраняем остаток
-                                        chunkBuffer.reset()
-                                        if (chunkData.size > CHUNK_SIZE_BYTES) {
-                                            chunkBuffer.write(chunkData, CHUNK_SIZE_BYTES, chunkData.size - CHUNK_SIZE_BYTES)
-                                        }
-                                        exactChunk
-                                    } else {
-                                        // Ровно 2 секунды
-                                        chunkBuffer.reset()
-                                        chunkData
-                                    }
-
-                                    // Отправляем чанк в Repository через корутину (новый способ)
-                                    CoroutineScope(Dispatchers.Main.immediate).launch {
-                                        AudioChunkRepository.emitChunk(chunk)
-                                    }
-                                    Log.d("RecordingService", "Emitted chunk: ${chunk.size} bytes")
-                                }
-                            }
-                        }
+        recordingJob = serviceScope.launch {
+            val buffer = ShortArray(CHUNK_SIZE_SAMPLES)
+            
+            while (isRecording) {
+                val readCount = audioRecord?.read(buffer, 0, buffer.size) ?: 0
+                
+                if (readCount > 0) {
+                    // Конвертируем ShortArray в ByteArray (little-endian)
+                    val byteData = ByteArray(readCount * 2)
+                    for (i in 0 until readCount) {
+                        val sample = buffer[i]
+                        byteData[i * 2] = (sample.toInt() and 0xFF).toByte()
+                        byteData[i * 2 + 1] = (sample.toInt() shr 8).toByte()
                     }
+
+                    // Сохраняем в файл
+                    try {
+                        fileOutputStream?.write(byteData)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to write to file", e)
+                        AudioChunkRepository.emitError("Ошибка записи в файл: ${e.message}")
+                        break
+                    }
+
+                    // Публикуем чанк через Repository
+                    AudioChunkRepository.emitChunk(byteData)
+                    
+                } else if (readCount < 0) {
+                    Log.e(TAG, "AudioRecord read error: $readCount")
+                    AudioChunkRepository.emitError("Ошибка чтения из микрофона")
+                    break
                 }
             }
-
-            recordingThread?.start()
-
-        } catch (e: SecurityException) {
-            Log.e("RecordingService", "Permission denied: ${e.message}")
-            isRecording.set(false)
-        } catch (e: Exception) {
-            Log.e("RecordingService", "Error starting recording: ${e.message}", e)
-            isRecording.set(false)
         }
-    }
-
-    private fun pauseRecording() {
-        if (!isRecording.get()) {
-            Log.w("RecordingService", "Cannot pause: not recording")
-            return
-        }
-
-        isPaused.set(true)
-        Log.i("RecordingService", "Recording paused")
-    }
-
-    private fun resumeRecording() {
-        if (!isRecording.get()) {
-            Log.w("RecordingService", "Cannot resume: not recording")
-            return
-        }
-
-        if (!isPaused.get()) {
-            Log.w("RecordingService", "Cannot resume: not paused")
-            return
-        }
-
-        isPaused.set(false)
-        Log.i("RecordingService", "Recording resumed")
     }
 
     private fun stopRecording() {
-        isRecording.set(false)
-        isPaused.set(false)
+        if (!isRecording) {
+            Log.w(TAG, "Not recording")
+            return
+        }
 
-        recordingThread?.join(2000)
+        isRecording = false
+        recordingJob?.cancel()
+        recordingJob = null
 
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
 
-        // Очищаем буфер
-        synchronized(chunkBuffer) {
-            chunkBuffer.reset()
+        try {
+            fileOutputStream?.flush()
+            fileOutputStream?.close()
+            fileOutputStream = null
+            Log.i(TAG, "Recording stopped. File size: ${outputFile?.length()} bytes")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing file output stream", e)
         }
 
-        Log.i("RecordingService", "Recording stopped")
+        _serviceState.value = ServiceState.IDLE
+        Log.i(TAG, "Recording stopped")
     }
 
     private fun createNotificationChannel() {
@@ -244,37 +246,27 @@ class RecordingService : Service() {
                 CHANNEL_ID,
                 "Запись лекций",
                 NotificationManager.IMPORTANCE_LOW
-            )
-            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+            ).apply {
+                description = "Уведомления для записи лекций"
+            }
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager.createNotificationChannel(channel)
         }
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun createNotification(text: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Lecture Notes")
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isRecording.get()) {
-            stopRecording()
-        }
-        Log.i("RecordingService", "Service destroyed")
-    }
-}
-
-// Вспомогательный класс для накопления байтов
-private class ByteArrayOutputStream {
-    private val buffer = mutableListOf<Byte>()
-
-    fun write(data: ByteArray, offset: Int, length: Int) {
-        for (i in offset until offset + length) {
-            buffer.add(data[i])
-        }
-    }
-
-    fun size(): Int = buffer.size
-
-    fun toByteArray(): ByteArray = buffer.toByteArray()
-
-    fun reset() {
-        buffer.clear()
+        stopRecording()
+        serviceScope.cancel()
+        Log.i(TAG, "Service destroyed")
     }
 }
