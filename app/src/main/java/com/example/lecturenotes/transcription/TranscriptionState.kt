@@ -7,11 +7,11 @@ package com.example.lecturenotes.transcription
 data class TranscriptionState(
     val isRecording: Boolean = false,
     val isFinalizing: Boolean = false,
-    val isLoadingModel: Boolean = false,
     val liveText: String = "",
     val finalizedText: String = "",
     val wordCount: Int = 0,
-    val error: String? = null
+    val error: String? = null,
+    val isLoadingModel: Boolean = false  // НОВОЕ: индикатор загрузки модели Whisper
 ) {
     val fullText: String
         get() = (finalizedText + " " + liveText).trim()
