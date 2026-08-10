@@ -32,10 +32,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.lecturenotes.ui.RecordingViewModel
+import com.example.lecturenotes.ui.RecordingViewModelFactory
 import com.example.lecturenotes.ui.SettingsConstants
 import com.example.lecturenotes.ui.SettingsScreen
 import com.example.lecturenotes.ui.SettingsViewModel
@@ -59,13 +61,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Корень приложения.
- * Сначала проверяет RECORD_AUDIO и запрашивает его при отсутствии.
- * Навигация показывается ТОЛЬКО после получения разрешения:
- * без него RecordingService не сможет ни стартовать (SecurityException
- * на Android 11+ для FGS типа microphone), ни создать AudioRecord.
- */
 @Composable
 private fun AppRoot() {
     val context = LocalContext.current
@@ -83,7 +78,6 @@ private fun AppRoot() {
         hasAudioPermission = results[Manifest.permission.RECORD_AUDIO] == true
     }
 
-    // Автозапрос при первом запуске
     LaunchedEffect(Unit) {
         if (!hasAudioPermission) {
             permissionLauncher.launch(requiredPermissions())
@@ -99,9 +93,6 @@ private fun AppRoot() {
     }
 }
 
-/**
- * Список разрешений: RECORD_AUDIO всегда, POST_NOTIFICATIONS на Android 13+.
- */
 private fun requiredPermissions(): Array<String> =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         arrayOf(
@@ -112,9 +103,6 @@ private fun requiredPermissions(): Array<String> =
         arrayOf(Manifest.permission.RECORD_AUDIO)
     }
 
-/**
- * Экран-заглушка, пока нет разрешения на микрофон.
- */
 @Composable
 private fun PermissionGate(onRequest: () -> Unit) {
     Column(
@@ -148,15 +136,20 @@ private fun PermissionGate(onRequest: () -> Unit) {
     }
 }
 
-/**
- * Навигация. Логика не изменена, вынесена в отдельный composable.
- */
 @Composable
 private fun AppNavHost() {
     val activity = LocalContext.current as? ComponentActivity
     val navController = rememberNavController()
-    val recordingViewModel = androidx.lifecycle.viewmodel.compose.viewModel<RecordingViewModel>()
-    val settingsViewModel = androidx.lifecycle.viewmodel.compose.viewModel<SettingsViewModel>()
+    
+    // Создаём SettingsViewModel первым — он нужен для фабрики RecordingViewModel
+    val settingsViewModel = viewModel<SettingsViewModel>()
+    
+    // Создаём фабрику с application context и settingsViewModel
+    val application = LocalContext.current.applicationContext as android.app.Application
+    val recordingViewModelFactory = RecordingViewModelFactory(application, settingsViewModel)
+    
+    // Создаём RecordingViewModel через кастомную фабрику
+    val recordingViewModel = viewModel<RecordingViewModel>(factory = recordingViewModelFactory)
 
     NavHost(
         navController = navController,
@@ -168,10 +161,9 @@ private fun AppNavHost() {
                 uiState = uiState,
                 onStartClick = { recordingViewModel.startRecording() },
                 onStopClick = { recordingViewModel.stopRecording() },
-                onSaveClick = {
-                    recordingViewModel.saveRecording()
-                },
+                onSaveClick = { recordingViewModel.saveRecording() },
                 onSettingsClick = { navController.navigate("settings") },
+                onHistoryClick = { navController.navigate("history") },
                 onBackClick = { activity?.finish() }
             )
         }

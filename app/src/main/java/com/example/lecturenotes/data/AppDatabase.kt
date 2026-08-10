@@ -17,8 +17,7 @@ abstract class AppDatabase : RoomDatabase() {
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                // Миграция пустая, так как схема не менялась
-                // Версия поднята для совместимости
+                db.execSQL("ALTER TABLE recordings ADD COLUMN audioPath TEXT DEFAULT NULL")
             }
         }
 
@@ -30,6 +29,7 @@ abstract class AppDatabase : RoomDatabase() {
                     "lecture_notes_database"
                 )
                     .addMigrations(MIGRATION_1_2)
+                    .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
                 instance
