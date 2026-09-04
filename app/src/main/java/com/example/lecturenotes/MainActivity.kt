@@ -4,185 +4,224 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
+import android.widget.Button
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.rememberNavController
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import com.example.lecturenotes.data.RecordingRepository
+import com.example.lecturenotes.transcription.TranscriptionManager
 import com.example.lecturenotes.ui.RecordingViewModel
-import com.example.lecturenotes.ui.RecordingViewModelFactory
-import com.example.lecturenotes.ui.SettingsConstants
-import com.example.lecturenotes.ui.SettingsScreen
 import com.example.lecturenotes.ui.SettingsViewModel
-import com.example.lecturenotes.ui.StreamingScreen
-import com.example.lecturenotes.ui.theme.LectureNotesTheme
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
-class MainActivity : ComponentActivity() {
+class MainActivity : AppCompatActivity() {
+
+    // ViewModels
+    private lateinit var recordingViewModel: RecordingViewModel
+    private lateinit var settingsViewModel: SettingsViewModel
+
+    // UI элементы
+    private lateinit var tvTranscription: TextView
+    private lateinit var btnRecord: Button
+    private lateinit var btnStop: Button
+    private lateinit var btnHistory: Button
+    private lateinit var btnSettings: Button
+
+    // Транскрипция
+    private lateinit var transcriptionManager: TranscriptionManager
+
+    // Параметры из настроек (обновляются при старте записи)
+    private var currentLanguage: String = "ru"
+    private var currentModel: String = "ggml-tiny.bin"
+
+    // Флаг записи
+    private var isRecording = false
+
+    companion object {
+        private const val REQUEST_RECORD_AUDIO_PERMISSION = 200
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        setContent {
-            LectureNotesTheme {
-                Surface(
-                    modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
-                ) {
-                    AppRoot()
-                }
+        setContentView(R.layout.activity_main)
+
+        // Инициализация ViewModels
+        recordingViewModel = ViewModelProvider(this).get(RecordingViewModel::class.java)
+        settingsViewModel = ViewModelProvider(this).get(SettingsViewModel::class.java)
+
+        // Инициализация UI
+        tvTranscription = findViewById(R.id.tvTranscription)
+        btnRecord = findViewById(R.id.btnRecord)
+        btnStop = findViewById(R.id.btnStop)
+        btnHistory = findViewById(R.id.btnHistory)
+        btnSettings = findViewById(R.id.btnSettings)
+
+        // Инициализация менеджера транскрипции
+        transcriptionManager = TranscriptionManager(this)
+
+        // Подписка на изменения настроек (обновляем переменные)
+        lifecycleScope.launch {
+            settingsViewModel.selectedLanguage.collectLatest { lang ->
+                currentLanguage = lang
+            }
+        }
+        lifecycleScope.launch {
+            settingsViewModel.selectedModel.collectLatest { model ->
+                currentModel = model
+            }
+        }
+
+        // Подписка на транскрипцию из RecordingViewModel
+        lifecycleScope.launch {
+            recordingViewModel.transcriptionText.collectLatest { text ->
+                tvTranscription.text = text
+            }
+        }
+
+        // Подписка на статус записи
+        lifecycleScope.launch {
+            recordingViewModel.isRecording.collectLatest { recording ->
+                isRecording = recording
+                updateButtons()
+            }
+        }
+
+        // Кнопка "Записать"
+        btnRecord.setOnClickListener {
+            if (checkPermissions()) {
+                startRecording()
+            } else {
+                requestPermissions()
+            }
+        }
+
+        // Кнопка "Стоп"
+        btnStop.setOnClickListener {
+            stopRecording()
+        }
+
+        // Кнопка "История" (пока просто Toast)
+        btnHistory.setOnClickListener {
+            Toast.makeText(this, "История записей (будет позже)", Toast.LENGTH_SHORT).show()
+            // TODO: открыть HistoryActivity
+        }
+
+        // Кнопка "Настройки" (пока просто Toast)
+        btnSettings.setOnClickListener {
+            Toast.makeText(this, "Настройки (будут позже)", Toast.LENGTH_SHORT).show()
+            // TODO: открыть SettingsActivity
+        }
+
+        // Проверяем разрешения при старте
+        if (!checkPermissions()) {
+            requestPermissions()
+        }
+    }
+
+    // Проверка разрешений
+    private fun checkPermissions(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestPermissions() {
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.RECORD_AUDIO),
+            REQUEST_RECORD_AUDIO_PERMISSION
+        )
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_RECORD_AUDIO_PERMISSION) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Разрешение получено", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Разрешение необходимо для записи", Toast.LENGTH_LONG).show()
             }
         }
     }
-}
 
-@Composable
-private fun AppRoot() {
-    val context = LocalContext.current
+    // Запуск записи
+    private fun startRecording() {
+        if (!checkPermissions()) {
+            Toast.makeText(this, "Нет разрешения на запись", Toast.LENGTH_SHORT).show()
+            return
+        }
 
-    var hasAudioPermission by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
-                PackageManager.PERMISSION_GRANTED
+        // Берём актуальные параметры из настроек (на всякий случай)
+        currentLanguage = settingsViewModel.getCurrentLanguage()
+        currentModel = settingsViewModel.getCurrentModel()
+
+        // Очищаем предыдущий текст
+        recordingViewModel.clearTranscription()
+
+        // Запускаем сервис записи с параметрами
+        recordingViewModel.startRecording(
+            context = this,
+            language = currentLanguage,
+            modelName = currentModel,
+            transcriptionManager = transcriptionManager
         )
+        isRecording = true
+        updateButtons()
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { results ->
-        hasAudioPermission = results[Manifest.permission.RECORD_AUDIO] == true
-    }
-
-    LaunchedEffect(Unit) {
-        if (!hasAudioPermission) {
-            permissionLauncher.launch(requiredPermissions())
+    // Остановка записи
+    private fun stopRecording() {
+        recordingViewModel.stopRecording()
+        isRecording = false
+        updateButtons()
+        // Сохраняем итоговую транскрипцию в историю (пока через репозиторий)
+        lifecycleScope.launch {
+            val finalText = recordingViewModel.getFinalTranscription()
+            if (finalText.isNotBlank()) {
+                val repository = RecordingRepository.getInstance(applicationContext)
+                // Сохраняем запись (путь к аудио пока заглушка)
+                repository.insertRecording(
+                    title = "Запись ${System.currentTimeMillis()}",
+                    text = finalText,
+                    audioFilePath = "" // позже добавим реальный путь
+                )
+                Toast.makeText(this@MainActivity, "Запись сохранена", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
-    if (hasAudioPermission) {
-        AppNavHost()
-    } else {
-        PermissionGate(
-            onRequest = { permissionLauncher.launch(requiredPermissions()) }
-        )
-    }
-}
-
-private fun requiredPermissions(): Array<String> =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        arrayOf(
-            Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.POST_NOTIFICATIONS
-        )
-    } else {
-        arrayOf(Manifest.permission.RECORD_AUDIO)
+    // Обновление состояния кнопок
+    private fun updateButtons() {
+        btnRecord.isEnabled = !isRecording
+        btnStop.isEnabled = isRecording
+        // Если запись идёт, показываем статус
+        if (isRecording) {
+            btnRecord.text = "Идёт запись..."
+        } else {
+            btnRecord.text = "Записать"
+        }
     }
 
-@Composable
-private fun PermissionGate(onRequest: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Text(
-            text = "Нет разрешения на запись аудио",
-            style = MaterialTheme.typography.titleLarge,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = "Для записи и распознавания речи нужен доступ к микрофону. Без него запись не работает.",
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center
-        )
-        Spacer(modifier = Modifier.height(24.dp))
-        Button(onClick = onRequest) {
-            Text("Выдать разрешение")
+    // Освобождение ресурсов при уничтожении
+    override fun onDestroy() {
+        super.onDestroy()
+        // Останавливаем запись, если активна
+        if (isRecording) {
+            recordingViewModel.stopRecording()
         }
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = "Если диалог не появляется — включите микрофон вручную: Настройки → Приложения → Lecture Notes → Разрешения.",
-            style = MaterialTheme.typography.bodySmall,
-            textAlign = TextAlign.Center
-        )
-    }
-}
-
-@Composable
-private fun AppNavHost() {
-    val activity = LocalContext.current as? ComponentActivity
-    val navController = rememberNavController()
-    
-    // Создаём SettingsViewModel первым — он нужен для фабрики RecordingViewModel
-    val settingsViewModel = viewModel<SettingsViewModel>()
-    
-    // Создаём фабрику с application context и settingsViewModel
-    val application = LocalContext.current.applicationContext as android.app.Application
-    val recordingViewModelFactory = RecordingViewModelFactory(application, settingsViewModel)
-    
-    // Создаём RecordingViewModel через кастомную фабрику
-    val recordingViewModel = viewModel<RecordingViewModel>(factory = recordingViewModelFactory)
-
-    NavHost(
-        navController = navController,
-        startDestination = "streaming"
-    ) {
-        composable("streaming") {
-            val uiState by recordingViewModel.uiState.collectAsState()
-            StreamingScreen(
-                uiState = uiState,
-                onStartClick = { recordingViewModel.startRecording() },
-                onStopClick = { recordingViewModel.stopRecording() },
-                onSaveClick = { recordingViewModel.saveRecording() },
-                onSettingsClick = { navController.navigate("settings") },
-                onHistoryClick = { navController.navigate("history") },
-                onBackClick = { activity?.finish() }
-            )
-        }
-        composable("settings") {
-            val currentModelSize by settingsViewModel.modelSize.collectAsState()
-            val currentLanguage by settingsViewModel.language.collectAsState()
-            SettingsScreen(
-                currentModelSize = currentModelSize,
-                currentLanguage = currentLanguage,
-                availableModelSizes = SettingsConstants.AVAILABLE_MODEL_SIZES,
-                availableLanguages = SettingsConstants.AVAILABLE_LANGUAGES,
-                onModelSizeSelected = { settingsViewModel.setModelSize(it) },
-                onLanguageSelected = { settingsViewModel.setLanguage(it) },
-                onResetToDefaults = { settingsViewModel.resetToDefaults() },
-                onBackClick = { navController.popBackStack() }
-            )
-        }
-        composable("history") {
-            Text("History Screen - TODO")
-        }
+        // Освобождаем модель Whisper (опционально)
+        transcriptionManager.releaseModel()
     }
 }
